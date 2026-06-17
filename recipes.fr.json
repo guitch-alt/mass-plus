@@ -1,0 +1,67 @@
+[
+  {
+    "id": "bowl-riz-thon-avocat",
+    "name": "Bowl riz, thon, avocat",
+    "category": "repas froid",
+    "cost": "€€",
+    "kcal": 820,
+    "protein": 43,
+    "carbs": 88,
+    "fat": 32,
+    "ingredients": ["250 g riz cuit", "120 g thon", "1 avocat", "1 c. à soupe huile d’olive", "citron"],
+    "steps": ["Mélanger le riz et le thon.", "Ajouter l’avocat en morceaux.", "Assaisonner avec huile d’olive et citron."],
+    "tags": ["repas froid", "prise de masse", "riche en protéines"]
+  },
+  {
+    "id": "pates-boeuf-huile",
+    "name": "Pâtes bœuf + huile d’olive",
+    "category": "repas famille",
+    "cost": "€€",
+    "kcal": 910,
+    "protein": 48,
+    "carbs": 98,
+    "fat": 34,
+    "ingredients": ["280 g pâtes cuites", "150 g bœuf", "1 c. à soupe huile d’olive", "sauce tomate"],
+    "steps": ["Cuire ou réchauffer les pâtes.", "Ajouter bœuf et sauce tomate.", "Finir avec l’huile d’olive hors du feu."],
+    "tags": ["prise de masse", "rapide", "famille"]
+  },
+  {
+    "id": "semoule-thon-olive",
+    "name": "Semoule, thon, huile d’olive",
+    "category": "repas rapide",
+    "cost": "€",
+    "kcal": 720,
+    "protein": 38,
+    "carbs": 82,
+    "fat": 25,
+    "ingredients": ["250 g semoule cuite", "120 g thon", "1 c. à soupe huile d’olive", "pois chiches"],
+    "steps": ["Préparer la semoule.", "Ajouter thon et pois chiches.", "Ajouter huile d’olive et épices."],
+    "tags": ["pas cher", "repas froid", "rapide"]
+  },
+  {
+    "id": "omelette-avocat-pain",
+    "name": "Omelette avocat pain au levain",
+    "category": "recette prise de masse",
+    "cost": "€€",
+    "kcal": 760,
+    "protein": 34,
+    "carbs": 48,
+    "fat": 46,
+    "ingredients": ["3 œufs", "100 g pain au levain", "1 avocat", "emmental"],
+    "steps": ["Faire une omelette avec les œufs.", "Ajouter un peu d’emmental.", "Servir avec pain et avocat."],
+    "tags": ["riche en calories", "riche en protéines"]
+  },
+  {
+    "id": "skyr-avoine-beurre-cacahuete",
+    "name": "Bol skyr avoine beurre de cacahuète",
+    "category": "repas rapide",
+    "cost": "€",
+    "kcal": 650,
+    "protein": 38,
+    "carbs": 70,
+    "fat": 22,
+    "ingredients": ["200 g skyr", "80 g flocons d’avoine", "30 g beurre de cacahuète", "miel"],
+    "steps": ["Mélanger skyr et avoine.", "Ajouter beurre de cacahuète.", "Sucrer légèrement avec miel."],
+    "tags": ["collation", "pas cher", "prise de masse"]
+  }
+]

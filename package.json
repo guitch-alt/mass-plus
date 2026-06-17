@@ -1,0 +1,10 @@
+{
+  "name": "mass-plus-github-pages",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PWA statique MASS PLUS locale/offline prête pour GitHub Pages",
+  "scripts": {
+    "start": "python3 -m http.server 8080",
+    "check": "node --check app.js && node --check service-worker.js"
+  }
+}

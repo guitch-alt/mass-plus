@@ -1,0 +1,10 @@
+[
+  { "id": "huile-olive", "category": "astuce calorique", "title": "Ajoute 1 cuillère d’huile d’olive", "body": "Dans les pâtes, le riz ou les légumes, c’est environ +90 kcal sans augmenter beaucoup le volume." },
+  { "id": "lait", "category": "astuce appétit", "title": "Bois 500 ml de lait dans la journée", "body": "À répartir en deux verres. Simple, peu cher, et plus facile qu’un gros repas." },
+  { "id": "liquide", "category": "quand je n’ai pas faim", "title": "Prépare une collation liquide", "body": "Lait, banane, flocons d’avoine et beurre de cacahuète passent souvent mieux qu’un repas solide." },
+  { "id": "oeufs", "category": "astuce courses", "title": "Prépare 2 œufs durs d’avance", "body": "À ajouter au goûter ou dans un repas froid pour augmenter les protéines." },
+  { "id": "legumineuses", "category": "petit budget", "title": "Lentilles ou pois chiches + huile", "body": "Une base peu chère, rassasiante, et facile à booster en calories." },
+  { "id": "gouter", "category": "résultat rapide", "title": "Ne saute pas le goûter", "body": "Une collation de 300 à 500 kcal chaque jour change vraiment la moyenne de la semaine." },
+  { "id": "300kcal", "category": "ajouter 300 kcal", "title": "Ajoute 300 kcal sans t’en rendre compte", "body": "Une banane, un verre de lait entier et une cuillère de beurre de cacahuète suffisent." },
+  { "id": "froid", "category": "repas froid", "title": "Garde un repas froid prêt", "body": "Riz, thon, pois chiches, huile d’olive. Prêt en avance, facile à manger dehors." }
+]

@@ -1,0 +1,22 @@
+{
+  "name": "Mass+",
+  "short_name": "Mass+",
+  "description": "PWA locale/offline pour organiser une prise de poids rapide et saine.",
+  "lang": "fr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f6f8f5",
+  "theme_color": "#116466",
+  "categories": ["health", "food", "lifestyle"],
+  "icons": [
+    { "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Ajouter un repas", "short_name": "Journal", "url": "./#journal", "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Collation rapide", "short_name": "Collations", "url": "./#snacks", "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Photo assistée", "short_name": "Photo", "url": "./#photo", "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192" }] }
+  ]
+}
