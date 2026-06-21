@@ -1,10 +1,13 @@
-const CACHE_NAME = "mass-plus-pwa-v3";
+const CACHE_NAME = "mass-plus-pwa-v4";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./style.css",
   "./app.js",
   "./manifest.json",
+  "./data/aliments-fr.json",
+  "./data/recettes-fr.json",
+  "./data/astuces-fr.json",
   "./foods.fr.json",
   "./recipes.fr.json",
   "./tips.fr.json",

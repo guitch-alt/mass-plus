@@ -10,7 +10,8 @@ Mass+ stocke les données dans IndexedDB sur l’appareil :
 - eau ;
 - produits sauvegardés ;
 - collations personnalisées ;
-- recettes favorites.
+- recettes favorites ;
+- photos avant/après associées aux repas.
 
 `localStorage` ne stocke qu’une préférence simple : le dernier écran ouvert.
 
@@ -26,12 +27,9 @@ Mass+ ne demande pas :
 
 ## Réseau
 
-L’application fonctionne sans réseau après le premier chargement. La seule fonctionnalité réseau optionnelle est Open Food Facts :
+L’application fonctionne sans réseau après le premier chargement. La V1 mobile ne dépend d’aucune API externe pour la recherche alimentaire, les favoris, les photos ou le journal.
 
-- déclenchée uniquement par un bouton utilisateur ;
-- utilisée pour chercher un produit par nom ou code-barres ;
-- jamais nécessaire au fonctionnement de base ;
-- les produits utiles peuvent être sauvegardés localement pour usage hors ligne.
+Une recherche en ligne de type Open Food Facts peut être ajoutée plus tard comme option secondaire, mais elle ne doit pas devenir obligatoire pour utiliser Mass+.
 
 ## Photo
 

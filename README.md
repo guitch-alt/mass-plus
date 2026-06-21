@@ -22,10 +22,10 @@ python3 -m http.server 8080
 Puis ouvrir :
 
 ```text
-http://localhost:8080/?v=mass3
+http://localhost:8080/?v=mobile-v2
 ```
 
-Le paramètre `?v=mass3` aide à contourner un ancien cache PWA pendant le développement.
+Le paramètre `?v=mobile-v2` aide à contourner un ancien cache PWA pendant le développement.
 
 ## Installer sur Android
 
@@ -48,12 +48,13 @@ Le service worker met en cache :
 - `style.css`
 - `app.js`
 - `manifest.json`
-- `foods.fr.json`
-- `recipes.fr.json`
-- `tips.fr.json`
+- `data/aliments-fr.json`
+- `data/recettes-fr.json`
+- `data/astuces-fr.json`
+- `foods.fr.json`, `recipes.fr.json`, `tips.fr.json` comme chemins compatibles historiques
 - icônes PWA
 
-Après un premier chargement, l’app peut fonctionner en mode avion. Open Food Facts reste optionnel : si le réseau est absent, la recherche utilise uniquement la base locale et les produits sauvegardés.
+Après un premier chargement, l’app peut fonctionner en mode avion. La recherche alimentaire V1 utilise la base locale et les produits sauvegardés sur l’appareil.
 
 ## Photo des plats
 
@@ -63,20 +64,22 @@ La photo est un mode assisté, pas une IA magique :
 - photo après repas ;
 - pourcentage mangé à corriger ;
 - aliments ajoutés manuellement depuis la base locale ;
-- mention d’estimation approximative.
+- favoris ajoutables ;
+- calories recalculées selon le pourcentage mangé.
 
 ## Confidentialité
 
-Les données restent sur l’appareil. Mass+ n’utilise ni Supabase, ni compte, ni authentification distante, ni clé API. Une requête Open Food Facts n’est envoyée que si l’utilisateur clique volontairement sur le bouton de recherche Open Food Facts.
+Les données restent sur l’appareil. Mass+ n’utilise ni Supabase, ni compte, ni authentification distante, ni clé API. La version actuelle ne dépend d’aucune API externe.
 
 ## Fichiers principaux
 
 - `index.html` : shell de l’application
 - `style.css` : design mobile-first
-- `app.js` : logique IndexedDB, journal, onboarding, OFF optionnel
-- `foods.fr.json` : base alimentaire locale
-- `recipes.fr.json` : recettes hypercaloriques
-- `tips.fr.json` : astuces du jour
+- `app.js` : logique IndexedDB, journal, onboarding, recherche locale, photo, favoris
+- `data/aliments-fr.json` : base alimentaire locale de 156 entrées
+- `data/recettes-fr.json` : 52 recettes hypercaloriques
+- `data/astuces-fr.json` : 30 astuces du jour
+- `foods.fr.json`, `recipes.fr.json`, `tips.fr.json` : copies compatibles historiques
 - `manifest.json` : PWA
 - `service-worker.js` : cache offline
 - `SECURITY.md` : audit sécurité et limites

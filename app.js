@@ -1,18 +1,20 @@
 "use strict";
 
 const DB_NAME = "mass-plus-local-db";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const PREF_SCREEN = "mass-plus-active-screen";
 const MEALS = ["petit-déjeuner", "déjeuner", "dîner", "collations"];
 const NAV = [
-  ["dashboard", "Accueil"],
-  ["journal", "Journal"],
-  ["snacks", "Collations"],
-  ["photo", "Photo"],
-  ["recipes", "Recettes"],
-  ["tips", "Astuces"],
-  ["profile", "Profil"]
+  ["dashboard", "Accueil", "⌂"],
+  ["journal", "Journal", "▦"],
+  ["add", "Ajouter", "＋"],
+  ["photo", "Photo repas", "▣"],
+  ["favorites", "Favoris", "★"],
+  ["recipes", "Recettes", "☰"],
+  ["tips", "Astuces", "✦"],
+  ["profile", "Profil", "◎"]
 ];
+const STORE_NAMES = ["settings", "entries", "weights", "savedFoods", "customSnacks", "favorites", "water", "photos"];
 
 let db;
 let foods = [];
@@ -25,25 +27,25 @@ let savedFoods = [];
 let customSnacks = [];
 let favorites = [];
 let waterToday = 0;
-let activeScreen = localStorage.getItem(PREF_SCREEN) || "dashboard";
-let composer = [];
-let photoState = { before: "", after: "", percent: 100 };
-let editingSnackId = null;
+let activeScreen = normalizeScreen(localStorage.getItem(PREF_SCREEN) || "dashboard");
+let journalDate = today();
+let mealDraft = [];
+let photoDraft = { before: "", after: "", percent: 100, items: [], mealType: "déjeuner" };
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-const id = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
-const today = () => new Date().toISOString().slice(0, 10);
+const uid = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
 const fmt = (value, digits = 0) => new Intl.NumberFormat("fr-FR", { maximumFractionDigits: digits }).format(Number(value || 0));
-const dateHuman = (date) => new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "short" }).format(new Date(`${date}T12:00:00`));
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[char]);
+const attr = (value) => String(value ?? "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+const round = (value, digits = 1) => Number(Number(value || 0).toFixed(digits));
+const todayLabel = () => new Intl.DateTimeFormat("fr-FR", { weekday: "long", day: "numeric", month: "long" }).format(new Date());
 
 const quickSnacks = [
-  { target: 300, name: "Lait + banane", kcal: 310, protein: 10, carbs: 47, fat: 9, items: "250 ml lait entier + 1 banane" },
-  { target: 500, name: "Skyr + avoine + miel", kcal: 520, protein: 33, carbs: 74, fat: 10, items: "200 g skyr + 80 g avoine + miel" },
-  { target: 700, name: "Pain + œufs + avocat", kcal: 710, protein: 31, carbs: 54, fat: 40, items: "pain au levain + 2 œufs + avocat" },
-  { target: 1000, name: "Semoule + huile + thon", kcal: 1010, protein: 55, carbs: 115, fat: 35, items: "semoule, thon, pois chiches, huile d’olive" },
-  { target: 500, name: "Fruits secs + lait", kcal: 505, protein: 13, carbs: 74, fat: 17, items: "50 g fruits secs + 500 ml lait" }
+  { id: "snack-300", type: "collation", name: "Lait + banane", quantity: "250 ml lait entier + 1 banane", kcal: 310, protein: 10, carbs: 47, fat: 9 },
+  { id: "snack-500", type: "collation", name: "Skyr + avoine + miel", quantity: "200 g skyr + 80 g avoine + miel", kcal: 520, protein: 33, carbs: 74, fat: 10 },
+  { id: "snack-700", type: "collation", name: "Pain + œufs + avocat", quantity: "pain au levain + 2 œufs + avocat", kcal: 710, protein: 31, carbs: 54, fat: 40 },
+  { id: "snack-1000", type: "collation", name: "Shake dense maison", quantity: "lait + avoine + banane + beurre de cacahuète", kcal: 980, protein: 34, carbs: 128, fat: 34 }
 ];
 
 const defaultProfile = {
@@ -69,13 +71,28 @@ const defaultProfile = {
   advice: []
 };
 
+function today() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function normalizeScreen(screen) {
+  if (screen === "snacks") return "add";
+  if (!NAV.some(([id]) => id === screen)) return "dashboard";
+  return screen;
+}
+
+function parseNum(value, fallback = 0) {
+  const number = Number(String(value ?? "").replace(",", ".").replace(/[^\d.-]/g, ""));
+  return Number.isFinite(number) ? number : fallback;
+}
+
 function openDb() {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = () => {
       const database = request.result;
-      ["settings", "entries", "weights", "savedFoods", "customSnacks", "favorites", "water"].forEach((store) => {
-        if (!database.objectStoreNames.contains(store)) database.createObjectStore(store, { keyPath: "id" });
+      STORE_NAMES.forEach((name) => {
+        if (!database.objectStoreNames.contains(name)) database.createObjectStore(name, { keyPath: "id" });
       });
     };
     request.onsuccess = () => resolve(request.result);
@@ -127,19 +144,22 @@ function clearStore(name) {
   });
 }
 
-async function loadJson(path, fallback = []) {
-  try {
-    const response = await fetch(path, { cache: "no-store" });
-    return response.ok ? response.json() : fallback;
-  } catch {
-    return fallback;
+async function loadJson(paths, fallback = []) {
+  for (const path of paths) {
+    try {
+      const response = await fetch(path, { cache: "no-store" });
+      if (response.ok) return response.json();
+    } catch {
+      // Offline cache or legacy path will be tried next.
+    }
   }
+  return fallback;
 }
 
 async function refreshState() {
   const profileSetting = await getOne("settings", "profile");
   profile = profileSetting?.value || null;
-  entries = await getAll("entries");
+  entries = (await getAll("entries")).sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
   weights = await getAll("weights");
   savedFoods = await getAll("savedFoods");
   customSnacks = await getAll("customSnacks");
@@ -156,7 +176,78 @@ function toast(message) {
   toast.timer = setTimeout(() => node.classList.remove("visible"), 2300);
 }
 
-function macros(items) {
+function normalizeSearch(text) {
+  const normalized = String(text ?? "")
+    .toLowerCase()
+    .replaceAll("œ", "oe")
+    .replaceAll("æ", "ae")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/['’`´-]/g, " ")
+    .replace(/[^a-z0-9 ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return normalized.split(" ").map((word) => {
+    if (word.length > 4 && word.endsWith("s")) return word.slice(0, -1);
+    return word;
+  }).join(" ");
+}
+
+function levenshtein(a, b) {
+  if (!a || !b) return Math.max(a.length, b.length);
+  const row = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i += 1) {
+    let prev = row[0];
+    row[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const tmp = row[j];
+      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = tmp;
+    }
+  }
+  return row[b.length];
+}
+
+function foodSearchText(food) {
+  return normalizeSearch([
+    food.name,
+    food.category,
+    food.portionLabel,
+    food.note,
+    ...(food.aliases || []),
+    ...(food.tags || [])
+  ].join(" "));
+}
+
+function searchScore(food, query) {
+  const q = normalizeSearch(query);
+  if (!q) return 1;
+  const text = food._search || foodSearchText(food);
+  if (text.includes(q)) return 100 - text.indexOf(q);
+  const words = text.split(" ");
+  return q.split(" ").reduce((score, token) => {
+    if (!token) return score;
+    if (words.some((word) => word.startsWith(token))) return score + 35;
+    if (words.some((word) => token.startsWith(word) && word.length >= 3)) return score + 18;
+    if (words.some((word) => Math.abs(word.length - token.length) <= 2 && levenshtein(word, token) <= 1)) return score + 12;
+    return score;
+  }, 0);
+}
+
+function allFoods() {
+  return [...foods, ...savedFoods].map((food) => ({ ...food, _search: food._search || foodSearchText(food) }));
+}
+
+function searchFoods(query, limit = 24) {
+  return allFoods()
+    .map((food) => ({ food, score: searchScore(food, query) }))
+    .filter((item) => !query || item.score > 0)
+    .sort((a, b) => b.score - a.score || a.food.name.localeCompare(b.food.name))
+    .slice(0, limit)
+    .map((item) => item.food);
+}
+
+function macroSum(items) {
   return items.reduce((sum, item) => ({
     kcal: sum.kcal + Number(item.kcal || 0),
     protein: sum.protein + Number(item.protein || 0),
@@ -165,11 +256,24 @@ function macros(items) {
   }), { kcal: 0, protein: 0, carbs: 0, fat: 0 });
 }
 
-function todaysEntries() {
-  return entries.filter((entry) => entry.date === today());
+function scaleFood(food, multiplier = 1) {
+  return {
+    id: food.id,
+    name: food.name,
+    quantity: `${fmt(multiplier, 1)} × ${food.portionLabel || food.quantity || "portion"}`,
+    kcal: round(food.kcal * multiplier),
+    protein: round(food.protein * multiplier),
+    carbs: round(food.carbs * multiplier),
+    fat: round(food.fat * multiplier)
+  };
 }
 
-function bmi() {
+function dayEntries(date = today()) {
+  return entries.filter((entry) => entry.date === date);
+}
+
+function bmiValue() {
+  if (!profile?.height || !profile?.currentWeight) return 0;
   return +(profile.currentWeight / ((profile.height / 100) ** 2)).toFixed(1);
 }
 
@@ -184,35 +288,32 @@ function estimateGoals(data) {
   const calorieGoal = maintenance + surplus;
   const proteinGoal = Math.round(data.objective === "prise de muscle" ? data.currentWeight * 1.8 : data.currentWeight * 1.5);
   const waterGoal = Math.round(Math.max(1800, data.currentWeight * 35));
-  const paceAdvice = weeklyGain > 0.75 ? "rythme demandé agressif : vise plutôt +500 à +750 g/semaine" : weeklyGain < 0.25 ? "+200 à +300 g/semaine" : `environ +${Math.round(weeklyGain * 1000)} g/semaine`;
+  const paceAdvice = weeklyGain > 0.75 ? "rythme rapide : vise plutôt +500 à +750 g/semaine" : weeklyGain < 0.25 ? "+200 à +300 g/semaine" : `environ +${Math.round(weeklyGain * 1000)} g/semaine`;
   const advice = [
-    data.appetite === "faible" ? "Mise sur les calories liquides et les petites collations denses." : "Garde un goûter régulier pour stabiliser la moyenne.",
+    data.appetite === "faible" ? "Privilégie les calories liquides et les petites collations denses." : "Garde un goûter régulier pour stabiliser la moyenne.",
     data.budget === "serré" ? "Base économique : riz, pâtes, œufs, lentilles, pois chiches et huile d’olive." : "Prévois 2 collations prêtes pour les jours chargés.",
     data.mealsPerDay < 4 ? "Ajouter une collation peut suffire à augmenter l’apport sans gros repas." : "Répartir les apports sur la journée aide à tenir l’objectif."
   ];
   return { calorieGoal, proteinGoal, waterGoal, paceAdvice, advice };
 }
 
+function setTitle(title) {
+  $("#screen-title").textContent = title;
+  $("#today-label").textContent = todayLabel();
+}
+
 function renderNav() {
-  const template = $("#nav-template").content;
-  $("#bottom-nav").replaceChildren(template.cloneNode(true));
-  $("#desktop-nav").replaceChildren(template.cloneNode(true));
-  $$("[data-screen]").forEach((button) => {
-    button.classList.toggle("active", button.dataset.screen === activeScreen);
-    button.addEventListener("click", () => navigate(button.dataset.screen));
-  });
+  const buttons = NAV.map(([screen, label, icon]) => `<button data-screen="${screen}" class="${screen === activeScreen ? "active" : ""}"><span>${icon}</span><small>${label}</small></button>`).join("");
+  $("#bottom-nav").innerHTML = buttons;
+  $("#desktop-nav").innerHTML = buttons;
+  $$("[data-screen]").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.screen)));
 }
 
 function navigate(screen) {
-  activeScreen = screen;
-  localStorage.setItem(PREF_SCREEN, screen);
-  history.replaceState(null, "", `#${screen}`);
+  activeScreen = normalizeScreen(screen);
+  localStorage.setItem(PREF_SCREEN, activeScreen);
+  history.replaceState(null, "", `#${activeScreen}`);
   render();
-}
-
-function setTitle(title) {
-  $("#screen-title").textContent = title;
-  $("#today-label").textContent = new Intl.DateTimeFormat("fr-FR", { weekday: "long", day: "numeric", month: "long" }).format(new Date());
 }
 
 function render() {
@@ -225,8 +326,9 @@ function render() {
   const screens = {
     dashboard: renderDashboard,
     journal: renderJournal,
-    snacks: renderSnacks,
+    add: renderAdd,
     photo: renderPhoto,
+    favorites: renderFavorites,
     recipes: renderRecipes,
     tips: renderTips,
     profile: renderProfile
@@ -234,385 +336,536 @@ function render() {
   (screens[activeScreen] || renderDashboard)();
 }
 
-function renderOnboarding(step = 1, draft = { ...defaultProfile }) {
-  const screen = $("#screen");
-  const goals = estimateGoals(draft);
-  screen.innerHTML = `
+function renderOnboarding() {
+  const draft = profile || defaultProfile;
+  $("#screen").innerHTML = `
     <article class="card hero-card">
       <p class="muted-label">Mode local/offline</p>
-      <h1>Un plan de prise de poids adapté à ton quotidien.</h1>
-      <p class="small">Pas d’email, pas de compte, pas de serveur obligatoire. Tout reste sur ce téléphone.</p>
+      <h1>Mass+ t’aide à manger assez, sans te compliquer la vie.</h1>
+      <p class="small">Pas de compte, pas d’e-mail. Les données restent sur ce téléphone.</p>
     </article>
-    <form id="onboarding-form" class="card" style="margin-top:14px">
-      <p class="muted-label">Questionnaire de départ</p>
-      <div class="form-grid">
-        <label>Prénom local facultatif<input name="firstName" value="${esc(draft.firstName)}" placeholder="Ex. Lina"></label>
-        <label>Sexe<select name="sex"><option value="female">Femme</option><option value="male">Homme</option><option value="other">Autre</option></select></label>
-        <label>Âge<input name="age" type="number" min="16" max="90" value="${esc(draft.age)}" required></label>
-        <label>Taille (cm)<input name="height" type="number" min="130" max="220" value="${esc(draft.height)}" required></label>
-        <label>Poids actuel (kg)<input name="currentWeight" type="number" step=".1" min="30" max="250" value="${esc(draft.currentWeight)}" required></label>
-        <label>Poids objectif (kg)<input name="targetWeight" type="number" step=".1" min="30" max="250" value="${esc(draft.targetWeight)}" required></label>
-        <label>Délai souhaité (semaines)<input name="deadlineWeeks" type="number" min="4" max="104" value="${esc(draft.deadlineWeeks)}" required></label>
-        <label>Activité physique<select name="activity"><option value="faible">Faible</option><option value="modérée">Modérée</option><option value="élevée">Élevée</option></select></label>
-        <label>Nombre de repas par jour<input name="mealsPerDay" type="number" min="2" max="7" value="${esc(draft.mealsPerDay)}"></label>
-        <label>Appétit<select name="appetite"><option value="faible">Faible</option><option value="moyen">Moyen</option><option value="fort">Fort</option></select></label>
-        <label>Aliments aimés<input name="likedFoods" value="${esc(draft.likedFoods)}" placeholder="pâtes, œufs, avocat..."></label>
-        <label>Aliments détestés<input name="dislikedFoods" value="${esc(draft.dislikedFoods)}" placeholder="thon, lait..."></label>
-        <label>Allergies / intolérances<input name="allergies" value="${esc(draft.allergies)}" placeholder="lactose, fruits à coque..."></label>
-        <label>Budget<select name="budget"><option value="serré">Serré</option><option value="moyen">Moyen</option><option value="confort">Confort</option></select></label>
-        <label>Objectif<select name="objective"><option value="prise de poids">Prise de poids</option><option value="prise de muscle">Prise de muscle</option><option value="maintien">Maintien</option></select></label>
-      </div>
-      <div class="card" style="margin-top:16px;background:var(--surface-soft);box-shadow:none">
-        <p class="muted-label">Objectifs générés</p>
-        <div class="grid four">
-          <div class="metric"><small>Calories</small><strong>${fmt(goals.calorieGoal)}</strong></div>
-          <div class="metric"><small>Protéines</small><strong>${fmt(goals.proteinGoal)} g</strong></div>
-          <div class="metric"><small>Eau</small><strong>${fmt(goals.waterGoal)} ml</strong></div>
-          <div class="metric"><small>Rythme</small><strong>${esc(goals.paceAdvice)}</strong></div>
-        </div>
-        <p class="small" style="margin-top:12px">${goals.advice.map(esc).join(" ")}</p>
-      </div>
-      <button class="primary-button" style="width:100%;margin-top:16px" type="submit">Créer mon plan local</button>
-    </form>`;
-  const form = $("#onboarding-form");
-  form.sex.value = draft.sex;
-  form.activity.value = draft.activity;
-  form.appetite.value = draft.appetite;
-  form.budget.value = draft.budget;
-  form.objective.value = draft.objective;
-  form.addEventListener("input", () => {
-    const next = formToProfile(form);
-    renderOnboarding(step, next);
-  });
-  form.addEventListener("submit", saveProfileFromForm);
+    <article class="card">
+      <h2>Questionnaire de départ</h2>
+      <form id="onboarding-form" class="form-grid">
+        <label>Prénom local facultatif<input name="firstName" value="${esc(draft.firstName)}" autocomplete="given-name"></label>
+        <label>Sexe${select("sex", [["female", "Femme"], ["male", "Homme"], ["other", "Autre"]], draft.sex)}</label>
+        <label>Âge<input name="age" inputmode="numeric" value="${esc(draft.age)}"></label>
+        <label>Taille (cm)<input name="height" inputmode="decimal" value="${esc(draft.height)}"></label>
+        <label>Poids actuel (kg)<input name="currentWeight" inputmode="decimal" value="${esc(draft.currentWeight)}"></label>
+        <label>Poids objectif (kg)<input name="targetWeight" inputmode="decimal" value="${esc(draft.targetWeight)}"></label>
+        <label>Délai souhaité (semaines)<input name="deadlineWeeks" inputmode="numeric" value="${esc(draft.deadlineWeeks)}"></label>
+        <label>Activité physique${select("activity", [["faible", "Faible"], ["modérée", "Modérée"], ["élevée", "Élevée"]], draft.activity)}</label>
+        <label>Repas par jour<input name="mealsPerDay" inputmode="numeric" value="${esc(draft.mealsPerDay)}"></label>
+        <label>Appétit${select("appetite", [["faible", "Faible"], ["moyen", "Moyen"], ["fort", "Fort"]], draft.appetite)}</label>
+        <label>Budget${select("budget", [["serré", "Serré"], ["moyen", "Moyen"], ["confort", "Confort"]], draft.budget)}</label>
+        <label>Objectif${select("objective", [["prise de poids", "Prise de poids"], ["prise de muscle", "Prise de muscle"], ["maintien", "Maintien"]], draft.objective)}</label>
+        <label>Aliments aimés<input name="likedFoods" value="${esc(draft.likedFoods)}"></label>
+        <label>Aliments détestés<input name="dislikedFoods" value="${esc(draft.dislikedFoods)}"></label>
+        <label>Allergies / intolérances<textarea name="allergies">${esc(draft.allergies)}</textarea></label>
+        <button class="primary-button form-wide">Créer mon plan local</button>
+      </form>
+    </article>`;
+  $("#onboarding-form").addEventListener("submit", saveProfile);
 }
 
-function formToProfile(form) {
-  const data = new FormData(form);
-  const base = {
-    firstName: data.get("firstName"),
-    sex: data.get("sex"),
-    age: Number(data.get("age")),
-    height: Number(data.get("height")),
-    currentWeight: Number(data.get("currentWeight")),
-    targetWeight: Number(data.get("targetWeight")),
-    deadlineWeeks: Number(data.get("deadlineWeeks")),
-    activity: data.get("activity"),
-    mealsPerDay: Number(data.get("mealsPerDay")),
-    appetite: data.get("appetite"),
-    likedFoods: data.get("likedFoods"),
-    dislikedFoods: data.get("dislikedFoods"),
-    allergies: data.get("allergies"),
-    budget: data.get("budget"),
-    objective: data.get("objective")
-  };
-  return { ...base, ...estimateGoals(base) };
+function select(name, options, value) {
+  return `<select name="${name}">${options.map(([optionValue, label]) => `<option value="${esc(optionValue)}" ${optionValue === value ? "selected" : ""}>${esc(label)}</option>`).join("")}</select>`;
 }
 
-async function saveProfileFromForm(event) {
+async function saveProfile(event) {
   event.preventDefault();
-  const nextProfile = formToProfile(event.currentTarget);
-  await putOne("settings", { id: "profile", value: nextProfile });
-  await putOne("weights", { id: id(), date: today(), weight: nextProfile.currentWeight });
+  const data = Object.fromEntries(new FormData(event.currentTarget));
+  const clean = {
+    firstName: data.firstName.trim(),
+    sex: data.sex,
+    age: parseNum(data.age, 27),
+    height: parseNum(data.height, 168),
+    currentWeight: parseNum(data.currentWeight, 51),
+    targetWeight: parseNum(data.targetWeight, 58),
+    deadlineWeeks: parseNum(data.deadlineWeeks, 16),
+    activity: data.activity,
+    mealsPerDay: parseNum(data.mealsPerDay, 4),
+    appetite: data.appetite,
+    likedFoods: data.likedFoods.trim(),
+    dislikedFoods: data.dislikedFoods.trim(),
+    allergies: data.allergies.trim(),
+    budget: data.budget,
+    objective: data.objective
+  };
+  profile = { ...clean, ...estimateGoals(clean) };
+  await putOne("settings", { id: "profile", value: profile });
+  await putOne("weights", { id: `weight-${today()}`, date: today(), value: profile.currentWeight });
   await refreshState();
-  activeScreen = "dashboard";
-  toast("Plan local créé.");
-  render();
+  navigate("dashboard");
 }
 
 function renderDashboard() {
-  setTitle(`Bonjour ${profile.firstName ? esc(profile.firstName) : ""}`.trim() || "Bonjour");
-  const day = todaysEntries();
-  const total = macros(day);
-  const caloriesLeft = Math.max(0, profile.calorieGoal - total.kcal);
-  const progress = Math.min(100, (total.kcal / profile.calorieGoal) * 100);
-  const proteinProgress = Math.min(100, (total.protein / profile.proteinGoal) * 100);
-  const weightProgress = Math.min(100, Math.max(0, ((profile.currentWeight - weights[0]?.weight) / Math.max(.1, profile.targetWeight - weights[0]?.weight)) * 100));
+  setTitle(`Bonjour ${profile.firstName || ""}`.trim() || "Bonjour");
+  const total = macroSum(dayEntries(today()));
+  const remaining = Math.max(0, profile.calorieGoal - total.kcal);
+  const progress = Math.min(100, Math.round((total.kcal / profile.calorieGoal) * 100));
   $("#screen").innerHTML = `
     <article class="card hero-card">
-      <div class="row"><p class="muted-label">Aujourd’hui</p><strong>${fmt(progress)}%</strong></div>
+      <p class="muted-label">Aujourd’hui · ${progress}%</p>
       <div class="hero-number">${fmt(total.kcal)} <small>kcal</small></div>
-      <p class="small">${fmt(caloriesLeft)} kcal restantes sur ${fmt(profile.calorieGoal)} kcal</p>
+      <p>${fmt(remaining)} kcal restantes sur ${fmt(profile.calorieGoal)} kcal</p>
       <div class="bar"><span style="width:${progress}%"></span></div>
     </article>
     <div class="quick-actions">
-      <button data-quick="journal">Ajouter un repas</button>
-      <button data-quick="photo">Scanner / photo</button>
-      <button data-quick="snacks">Collation rapide</button>
+      <button data-go="add">Ajouter</button>
+      <button data-go="photo">Photo repas</button>
+      <button data-go="favorites">Favori</button>
     </div>
     <div class="grid four">
-      <div class="metric"><small>Protéines</small><strong>${fmt(total.protein,1)} g</strong><div class="bar dark"><span style="width:${proteinProgress}%"></span></div></div>
-      <div class="metric"><small>Glucides</small><strong>${fmt(total.carbs,1)} g</strong></div>
-      <div class="metric"><small>Lipides</small><strong>${fmt(total.fat,1)} g</strong></div>
-      <div class="metric"><small>Eau</small><strong>${fmt(waterToday)} ml</strong></div>
+      ${metric("Protéines", `${fmt(total.protein, 1)} g`)}
+      ${metric("Glucides", `${fmt(total.carbs, 1)} g`)}
+      ${metric("Lipides", `${fmt(total.fat, 1)} g`)}
+      ${metric("Eau", `${fmt(waterToday)} ml`)}
     </div>
-    <article class="card" style="margin-top:14px">
-      <div class="row"><div><p class="muted-label">Poids actuel</p><h2>${fmt(profile.currentWeight,1)} kg</h2></div><div style="text-align:right"><p class="muted-label">Objectif</p><h2>${fmt(profile.targetWeight,1)} kg</h2></div></div>
-      <div class="bar dark"><span style="width:${weightProgress}%"></span></div>
-      ${bmiValue(profile) < 17.5 ? `<p class="warning" style="margin-top:12px">suivi médical recommandé en cas de maigreur importante</p>` : ""}
+    <article class="card">
+      <div class="row"><div><p class="muted-label">Objectif poids</p><h2>${fmt(profile.currentWeight, 1)} kg → ${fmt(profile.targetWeight, 1)} kg</h2></div><strong>IMC ${fmt(bmiValue(), 1)}</strong></div>
+      ${bmiValue() < 17.5 ? `<p class="warning">Suivi médical recommandé en cas de maigreur importante.</p>` : ""}
+      <p class="small">${esc(profile.paceAdvice)}</p>
     </article>
-    <article class="card" style="margin-top:14px">
+    <article class="card">
       <div class="row"><h2>Eau</h2><span class="small">Objectif ${fmt(profile.waterGoal)} ml</span></div>
-      <div class="water-buttons"><button data-water="250">+250 ml</button><button data-water="500">+500 ml</button><button data-water="-250">-250 ml</button></div>
+      <div class="water-buttons">
+        <button data-water="250">+250 ml</button>
+        <button data-water="500">+500 ml</button>
+        <button data-water="-250">-250 ml</button>
+      </div>
     </article>`;
-  $$("[data-quick]").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.quick)));
-  $$("[data-water]").forEach((button) => button.addEventListener("click", async () => {
-    waterToday = Math.max(0, waterToday + Number(button.dataset.water));
-    await putOne("water", { id: today(), date: today(), ml: waterToday });
-    renderDashboard();
-  }));
+  $$("[data-go]").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.go)));
+  $$("[data-water]").forEach((button) => button.addEventListener("click", () => updateWater(parseNum(button.dataset.water))));
 }
 
-function bmiValue(data = profile) {
-  return +(data.currentWeight / ((data.height / 100) ** 2)).toFixed(1);
+function metric(label, value) {
+  return `<div class="metric"><small>${esc(label)}</small><strong>${esc(value)}</strong></div>`;
+}
+
+async function updateWater(delta) {
+  waterToday = Math.max(0, waterToday + delta);
+  await putOne("water", { id: today(), date: today(), ml: waterToday });
+  renderDashboard();
 }
 
 function renderJournal() {
-  setTitle("Journal alimentaire");
-  const selectedDate = new URLSearchParams(location.search).get("date") || today();
-  const dayEntries = entries.filter((entry) => entry.date === selectedDate);
-  const total = macros(dayEntries);
+  setTitle("Journal");
+  const list = dayEntries(journalDate);
+  const total = macroSum(list);
+  const progress = Math.min(100, Math.round((total.kcal / profile.calorieGoal) * 100));
   $("#screen").innerHTML = `
     <article class="card">
-      <div class="row"><div><p class="muted-label">${dateHuman(selectedDate)}</p><h2>${fmt(total.kcal)} kcal</h2></div><div class="macro-line">P ${fmt(total.protein,1)} · G ${fmt(total.carbs,1)} · L ${fmt(total.fat,1)}</div></div>
-    </article>
-    <article class="card">
-      <h2>Ajouter un aliment</h2>
-      <div class="form-grid">
-        <label>Repas<select id="meal-type">${MEALS.map((meal) => `<option>${meal}</option>`).join("")}</select></label>
-        <label>Quantité (portions)<input id="portion-count" type="number" min=".1" step=".1" value="1"></label>
+      <label>Date<input id="journal-date" type="date" value="${journalDate}"></label>
+      <div class="summary-strip">
+        ${metric("Calories", `${fmt(total.kcal)} / ${fmt(profile.calorieGoal)}`)}
+        ${metric("Protéines", `${fmt(total.protein, 1)} g`)}
+        ${metric("Glucides", `${fmt(total.carbs, 1)} g`)}
+        ${metric("Lipides", `${fmt(total.fat, 1)} g`)}
       </div>
-      <div class="search-tools">
-        <input id="food-search" placeholder="Rechercher : skyr, pâtes, avocat...">
-        <div class="row"><button id="off-search" class="secondary-button">Open Food Facts</button><input id="barcode" placeholder="Code-barres" inputmode="numeric"></div>
-      </div>
-      <div id="food-results" class="food-list"></div>
+      <div class="bar dark"><span style="width:${progress}%"></span></div>
+      <p class="small">Eau : ${fmt(waterToday)} ml</p>
     </article>
-    <section class="section"><span>Par journée</span><h2>Repas</h2></section>
-    <div class="meal-columns">${MEALS.map((meal) => mealColumn(meal, dayEntries.filter((entry) => entry.mealType === meal))).join("")}</div>
-    <article class="card" style="margin-top:14px"><div class="row"><h2>Exports</h2><div><button id="export-json" class="secondary-button">JSON</button> <button id="export-csv" class="secondary-button">CSV</button></div></div></article>`;
-  bindFoodSearch();
-  $("#off-search").addEventListener("click", searchOpenFoodFacts);
-  $("#barcode").addEventListener("change", searchBarcode);
-  $("#export-json").addEventListener("click", exportJson);
-  $("#export-csv").addEventListener("click", exportCsv);
+    <div class="quick-actions">
+      <button data-go="add">Ajouter</button>
+      <button data-go="photo">Photo repas</button>
+      <button data-go="favorites">Favori</button>
+    </div>
+    <section class="section"><span>Repas du jour</span><h2>Ce qui est déjà ajouté</h2></section>
+    <div class="meal-columns">${MEALS.map((meal) => mealCard(meal, list.filter((entry) => entry.mealType === meal))).join("")}</div>`;
+  $("#journal-date").addEventListener("change", (event) => { journalDate = event.target.value || today(); renderJournal(); });
+  $$("[data-go]").forEach((button) => button.addEventListener("click", () => navigate(button.dataset.go)));
+  bindEntryButtons();
+}
+
+function mealCard(meal, mealEntries) {
+  const total = macroSum(mealEntries);
+  return `<article class="card meal-card">
+    <h3>${esc(meal)} <span>${fmt(total.kcal)} kcal</span></h3>
+    ${mealEntries.length ? mealEntries.map(entryRow).join("") : `<p class="empty">Rien pour le moment.</p>`}
+  </article>`;
+}
+
+function entryRow(entry) {
+  const photoHtml = entry.photos ? `<div class="entry-photos">${entry.photos.before ? `<img src="${entry.photos.before}" alt="Avant">` : ""}${entry.photos.after ? `<img src="${entry.photos.after}" alt="Après">` : ""}</div>` : "";
+  const itemText = entry.items?.length ? `<p class="small">${entry.items.map((item) => esc(`${item.name} · ${item.quantity || "portion"}`)).join("<br>")}</p>` : "";
+  return `<div class="journal-entry">
+    <div>
+      <b>${esc(entry.name)}</b>
+      <span class="macro-line">${esc(entry.quantity || "1 portion")} · ${fmt(entry.kcal)} kcal · P ${fmt(entry.protein, 1)} · G ${fmt(entry.carbs, 1)} · L ${fmt(entry.fat, 1)}</span>
+      ${itemText}${photoHtml}
+    </div>
+    <div class="entry-actions">
+      <button data-fav-entry="${entry.id}" title="Favori">★</button>
+      <button data-delete-entry="${entry.id}" title="Supprimer">×</button>
+    </div>
+  </div>`;
+}
+
+function bindEntryButtons() {
   $$("[data-delete-entry]").forEach((button) => button.addEventListener("click", async () => {
     await deleteOne("entries", button.dataset.deleteEntry);
     await refreshState();
-    renderJournal();
+    render();
+  }));
+  $$("[data-fav-entry]").forEach((button) => button.addEventListener("click", async () => {
+    const entry = entries.find((item) => item.id === button.dataset.favEntry);
+    if (!entry) return;
+    await saveFavoriteFromEntry(entry);
+    toast("Ajouté aux favoris.");
   }));
 }
 
-function mealColumn(meal, items) {
-  const total = macros(items);
-  return `<article class="card meal-card"><h3>${esc(meal)} <span>${fmt(total.kcal)} kcal</span></h3>${items.length ? items.map((entry) => `
-    <div class="journal-entry"><div><b>${esc(entry.name)}</b><span class="macro-line">${esc(entry.quantity || "")} · ${fmt(entry.kcal)} kcal · P ${fmt(entry.protein,1)}</span></div><button data-delete-entry="${entry.id}">×</button></div>`).join("") : `<p class="empty">Aucune entrée.</p>`}</article>`;
+function renderAdd() {
+  setTitle("Ajouter");
+  $("#screen").innerHTML = `
+    <section class="section"><span>Ajout rapide</span><h2>Que veux-tu ajouter ?</h2></section>
+    <div class="action-grid">
+      <button data-scroll="food-search-card">Chercher un aliment</button>
+      <button data-scroll="favorite-card">Ajouter un favori</button>
+      <button data-scroll="manual-food-card">Produit absent</button>
+      <button data-scroll="meal-builder-card">Repas complet</button>
+    </div>
+    <article id="food-search-card" class="card">${foodSearchBlock("add-food-search", "add-food-results", "petit-déjeuner")}</article>
+    <article id="favorite-card" class="card">
+      <h2>Favoris en 1 clic</h2>
+      <div class="food-list">${favorites.length ? favorites.map(favoriteRow).join("") : `<p class="empty">Aucun favori pour le moment. Enregistre un repas depuis le journal, la photo ou les recettes.</p>`}</div>
+    </article>
+    <article id="manual-food-card" class="card">${manualFoodForm()}</article>
+    <article class="card">
+      <h2>Collations rapides</h2>
+      <div class="food-list">${quickSnacks.map((snack) => snackRow(snack)).join("")}</div>
+    </article>
+    <article id="meal-builder-card" class="card">${mealBuilderHtml()}</article>`;
+  bindScrollButtons();
+  bindFoodSearch("add-food-search", "add-food-results");
+  bindFavoriteButtons();
+  bindSnackButtons();
+  $("#manual-food-form").addEventListener("submit", saveManualFood);
+  bindMealBuilder();
 }
 
-function bindFoodSearch() {
-  const input = $("#food-search");
-  const results = $("#food-results");
-  const renderResults = (list) => {
-    results.innerHTML = list.slice(0, 12).map(foodRow).join("");
-    $$("[data-add-food]", results).forEach((button) => button.addEventListener("click", () => addFoodById(button.dataset.addFood)));
-    $$("[data-save-food]", results).forEach((button) => button.addEventListener("click", () => saveFoodById(button.dataset.saveFood)));
-  };
+function bindScrollButtons() {
+  $$("[data-scroll]").forEach((button) => button.addEventListener("click", () => {
+    $(`#${button.dataset.scroll}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }));
+}
+
+function foodSearchBlock(inputId, resultsId, mealType) {
+  return `<h2>Chercher un aliment</h2>
+    <p class="small">Recherche tolérante : oeuf, œufs, oeu ou oe retrouvent bien “Œufs”.</p>
+    <div class="search-tools">
+      <input id="${inputId}" placeholder="Ex : oeuf, riz poulet, sandwich..." autocomplete="off">
+      <label>Repas${select("mealType", MEALS.map((meal) => [meal, meal]), mealType)}</label>
+    </div>
+    <div id="${resultsId}" class="food-list"></div>`;
+}
+
+function bindFoodSearch(inputId, resultsId) {
+  const input = $(`#${inputId}`);
+  const results = $(`#${resultsId}`);
   const update = () => {
-    const query = input.value.trim().toLowerCase();
-    const pool = [...foods, ...savedFoods];
-    renderResults(pool.filter((food) => !query || food.name.toLowerCase().includes(query) || food.tags?.some((tag) => tag.includes(query))));
+    const mealSelect = results.closest(".card").querySelector("select[name='mealType']");
+    const mealType = mealSelect?.value || "petit-déjeuner";
+    const list = searchFoods(input.value, 18);
+    results.innerHTML = list.map((food) => foodRow(food, mealType)).join("");
+    bindFoodResultButtons(results);
   };
   input.addEventListener("input", update);
+  results.closest(".card").querySelector("select[name='mealType']")?.addEventListener("change", update);
   update();
 }
 
-function foodRow(food) {
-  const source = food.source ? `<span class="tag">${esc(food.source)}</span>` : "";
-  return `<div class="food-row"><div><b>${esc(food.name)}</b><span class="macro-line">${esc(food.portion)} · ${fmt(food.kcal)} kcal · P ${fmt(food.protein,1)} · G ${fmt(food.carbs,1)} · L ${fmt(food.fat,1)}</span><div class="tag-line">${source}${(food.tags || []).slice(0,4).map((tag) => `<span class="tag">${esc(tag)}</span>`).join("")}</div></div><div><button class="primary-button" data-add-food="${esc(food.id)}">Ajouter</button>${food.source === "OFF" ? `<button class="secondary-button" data-save-food="${esc(food.id)}" style="margin-top:6px">Sauver</button>` : ""}</div></div>`;
+function foodRow(food, mealType) {
+  return `<div class="food-row">
+    <div>
+      <b>${esc(food.name)}</b>
+      <span class="macro-line">${esc(food.portionLabel || "1 portion")} · ${fmt(food.kcal)} kcal · P ${fmt(food.protein, 1)} · G ${fmt(food.carbs, 1)} · L ${fmt(food.fat, 1)}</span>
+      <div class="tag-line">${(food.tags || []).slice(0, 4).map((tag) => `<span class="tag">${esc(tag)}</span>`).join("")}</div>
+    </div>
+    <div class="food-actions">
+      <input data-qty-food="${esc(food.id)}" inputmode="decimal" value="1" aria-label="Quantité">
+      <button class="primary-button" data-add-food="${esc(food.id)}" data-meal="${esc(mealType)}">Ajouter</button>
+      <button class="secondary-button" data-fav-food="${esc(food.id)}">★</button>
+    </div>
+  </div>`;
 }
 
-async function addFoodById(foodId, mealType = $("#meal-type")?.value || "collations") {
-  const food = [...foods, ...savedFoods].find((item) => item.id === foodId);
+function bindFoodResultButtons(root = document) {
+  $$("[data-add-food]", root).forEach((button) => button.addEventListener("click", async () => {
+    const food = allFoods().find((item) => item.id === button.dataset.addFood);
+    const quantityInput = root.querySelector(`[data-qty-food="${attr(button.dataset.addFood)}"]`);
+    await addFoodEntry(food, button.dataset.meal, parseNum(quantityInput?.value, 1));
+  }));
+  $$("[data-fav-food]", root).forEach((button) => button.addEventListener("click", async () => {
+    const food = allFoods().find((item) => item.id === button.dataset.favFood);
+    if (!food) return;
+    await putOne("favorites", favoriteFromItems(food.name, "aliment", [scaleFood(food, 1)]));
+    await refreshState();
+    toast("Aliment ajouté aux favoris.");
+  }));
+}
+
+async function addFoodEntry(food, mealType, multiplier = 1) {
   if (!food) return;
-  const portions = Math.max(.1, Number($("#portion-count")?.value || 1));
+  const item = scaleFood(food, multiplier);
   await putOne("entries", {
-    id: id(),
-    date: today(),
+    id: uid(),
+    date: journalDate || today(),
     mealType,
-    name: food.name,
-    quantity: `${fmt(portions,1)} × ${food.portion}`,
-    kcal: Math.round(food.kcal * portions),
-    protein: +(food.protein * portions).toFixed(1),
-    carbs: +(food.carbs * portions).toFixed(1),
-    fat: +(food.fat * portions).toFixed(1),
-    source: food.source || "local"
+    name: item.name,
+    quantity: item.quantity,
+    ...macroSum([item]),
+    items: [item],
+    source: "base locale",
+    createdAt: new Date().toISOString()
   });
   await refreshState();
-  toast(`${food.name} ajouté.`);
-  renderJournal();
+  toast("Ajouté au journal.");
 }
 
-async function saveFoodById(foodId) {
-  const food = [...foods, ...savedFoods].find((item) => item.id === foodId);
-  if (!food) return;
-  await putOne("savedFoods", { ...food, source: "OFF sauvegardé" });
+function favoriteRow(fav) {
+  return `<div class="food-row">
+    <div><b>${esc(fav.name)}</b><span class="macro-line">${esc(fav.type || "favori")} · ${fmt(fav.kcal)} kcal · P ${fmt(fav.protein, 1)} · G ${fmt(fav.carbs, 1)} · L ${fmt(fav.fat, 1)}</span></div>
+    <div class="food-actions"><button class="primary-button" data-add-favorite="${esc(fav.id)}">Ajouter</button><button class="danger-button" data-delete-favorite="${esc(fav.id)}">×</button></div>
+  </div>`;
+}
+
+function snackRow(snack) {
+  return `<div class="food-row">
+    <div><b>${esc(snack.name)}</b><span class="macro-line">${esc(snack.quantity)} · ${fmt(snack.kcal)} kcal · P ${fmt(snack.protein, 1)} · G ${fmt(snack.carbs, 1)} · L ${fmt(snack.fat, 1)}</span></div>
+    <div class="food-actions"><button class="primary-button" data-add-snack="${esc(snack.id)}">Ajouter</button><button class="secondary-button" data-fav-snack="${esc(snack.id)}">★</button></div>
+  </div>`;
+}
+
+function bindSnackButtons() {
+  $$("[data-add-snack]").forEach((button) => button.addEventListener("click", async () => {
+    const snack = quickSnacks.find((item) => item.id === button.dataset.addSnack);
+    await putOne("entries", entryFromFavorite({ ...snack, items: [{ ...snack }] }, "collations"));
+    await refreshState();
+    toast("Collation ajoutée.");
+  }));
+  $$("[data-fav-snack]").forEach((button) => button.addEventListener("click", async () => {
+    const snack = quickSnacks.find((item) => item.id === button.dataset.favSnack);
+    await putOne("favorites", favoriteFromItems(snack.name, "collation", [{ ...snack }]));
+    await refreshState();
+    toast("Collation ajoutée aux favoris.");
+  }));
+}
+
+function manualFoodForm() {
+  return `<h2>Créer un produit absent</h2>
+    <form id="manual-food-form" class="form-grid">
+      <label>Nom<input name="name" required placeholder="Ex : yaourt maison"></label>
+      <label>Portion<input name="portionLabel" required placeholder="Ex : 1 bol, 100 g"></label>
+      <label>Kcal<input name="kcal" inputmode="decimal" required></label>
+      <label>Protéines<input name="protein" inputmode="decimal" required></label>
+      <label>Glucides<input name="carbs" inputmode="decimal" required></label>
+      <label>Lipides<input name="fat" inputmode="decimal" required></label>
+      <label>Catégorie<input name="category" value="personnel"></label>
+      <label>Alias / synonymes<input name="aliases" placeholder="séparés par virgules"></label>
+      <button class="primary-button form-wide">Sauvegarder dans ma base locale</button>
+    </form>`;
+}
+
+async function saveManualFood(event) {
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(event.currentTarget));
+  const food = {
+    id: `custom-${uid()}`,
+    name: data.name.trim(),
+    aliases: data.aliases.split(",").map((item) => item.trim()).filter(Boolean),
+    category: data.category.trim() || "personnel",
+    portionLabel: data.portionLabel.trim(),
+    portionGrams: 0,
+    kcal: parseNum(data.kcal),
+    protein: parseNum(data.protein),
+    carbs: parseNum(data.carbs),
+    fat: parseNum(data.fat),
+    tags: ["personnel", "hors ligne"]
+  };
+  await putOne("savedFoods", food);
   await refreshState();
-  toast("Produit sauvegardé hors ligne.");
+  toast("Produit sauvegardé localement.");
+  renderAdd();
 }
 
-async function searchOpenFoodFacts() {
-  const query = $("#food-search").value.trim();
-  if (!query) return toast("Tape un nom de produit.");
-  if (!navigator.onLine) return toast("Hors ligne : recherche locale uniquement.");
-  try {
-    const url = `https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(query)}&search_simple=1&action=process&json=1&page_size=8&countries_tags=france`;
-    const response = await fetch(url);
-    const data = await response.json();
-    const offFoods = (data.products || []).map(offToFood).filter(Boolean);
-    savedFoods = [...savedFoods.filter((food) => food.source !== "OFF"), ...offFoods];
-    $("#food-results").innerHTML = offFoods.length ? offFoods.map(foodRow).join("") : `<p class="empty">Aucun résultat exploitable.</p>`;
-    $$("[data-add-food]", $("#food-results")).forEach((button) => button.addEventListener("click", () => addFoodById(button.dataset.addFood)));
-    $$("[data-save-food]", $("#food-results")).forEach((button) => button.addEventListener("click", () => saveFoodById(button.dataset.saveFood)));
-  } catch {
-    toast("Open Food Facts indisponible. La base locale reste utilisable.");
+function mealBuilderHtml() {
+  const total = macroSum(mealDraft);
+  return `<h2>Créer un repas complet</h2>
+    <p class="small">Ajoute plusieurs aliments, puis sauvegarde le repas au journal ou comme favori.</p>
+    <input id="meal-search" placeholder="Chercher un aliment à ajouter au repas">
+    <div id="meal-results" class="food-list"></div>
+    <div class="journal-list">${mealDraft.length ? mealDraft.map((item, index) => `<div class="journal-row row"><div><b>${esc(item.name)}</b><span class="macro-line">${esc(item.quantity)} · ${fmt(item.kcal)} kcal</span></div><button class="danger-button" data-remove-meal-item="${index}">×</button></div>`).join("") : `<p class="empty">Le repas est vide.</p>`}</div>
+    <p class="macro-line">Total : ${fmt(total.kcal)} kcal · P ${fmt(total.protein, 1)} · G ${fmt(total.carbs, 1)} · L ${fmt(total.fat, 1)}</p>
+    <div class="form-grid">
+      <label>Nom du repas<input id="meal-name" value="Repas maison"></label>
+      <label>Type de repas${select("mealType", MEALS.map((meal) => [meal, meal]), "déjeuner")}</label>
+    </div>
+    <div class="row buttons-row">
+      <button id="add-meal-journal" class="primary-button">Ajouter au journal</button>
+      <button id="save-meal-favorite" class="secondary-button">Mettre en favori</button>
+    </div>`;
+}
+
+function bindMealBuilder() {
+  const input = $("#meal-search");
+  const results = $("#meal-results");
+  const update = () => {
+    results.innerHTML = searchFoods(input.value, 10).map((food) => `<div class="food-row"><div><b>${esc(food.name)}</b><span class="macro-line">${esc(food.portionLabel)} · ${fmt(food.kcal)} kcal</span></div><div class="food-actions"><input data-meal-qty="${esc(food.id)}" inputmode="decimal" value="1"><button class="primary-button" data-meal-food="${esc(food.id)}">Ajouter</button></div></div>`).join("");
+    $$("[data-meal-food]", results).forEach((button) => button.addEventListener("click", () => {
+      const food = allFoods().find((item) => item.id === button.dataset.mealFood);
+      const qty = parseNum(results.querySelector(`[data-meal-qty="${attr(button.dataset.mealFood)}"]`)?.value, 1);
+      mealDraft.push(scaleFood(food, qty));
+      renderAdd();
+      $("#meal-builder-card").scrollIntoView({ block: "start" });
+    }));
+  };
+  input.addEventListener("input", update);
+  update();
+  $$("[data-remove-meal-item]").forEach((button) => button.addEventListener("click", () => { mealDraft.splice(Number(button.dataset.removeMealItem), 1); renderAdd(); }));
+  $("#add-meal-journal").addEventListener("click", async () => saveMealDraft(false));
+  $("#save-meal-favorite").addEventListener("click", async () => saveMealDraft(true));
+}
+
+async function saveMealDraft(onlyFavorite) {
+  if (!mealDraft.length) return toast("Ajoute au moins un aliment.");
+  const name = $("#meal-name").value.trim() || "Repas maison";
+  const mealType = $("#meal-builder-card select[name='mealType']").value;
+  const favorite = favoriteFromItems(name, mealType, mealDraft);
+  if (onlyFavorite) {
+    await putOne("favorites", favorite);
+    await refreshState();
+    toast("Repas favori sauvegardé.");
+    return;
   }
+  await putOne("entries", entryFromFavorite(favorite, mealType));
+  await refreshState();
+  mealDraft = [];
+  toast("Repas ajouté.");
+  navigate("journal");
 }
 
-async function searchBarcode() {
-  const code = $("#barcode").value.trim();
-  if (!code || !navigator.onLine) return;
-  try {
-    const response = await fetch(`https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(code)}.json`);
-    const data = await response.json();
-    const food = offToFood(data.product);
-    if (!food) return toast("Produit incomplet.");
-    savedFoods = [...savedFoods.filter((item) => item.id !== food.id), food];
-    $("#food-results").innerHTML = foodRow(food);
-    $$("[data-add-food]", $("#food-results")).forEach((button) => button.addEventListener("click", () => addFoodById(button.dataset.addFood)));
-    $$("[data-save-food]", $("#food-results")).forEach((button) => button.addEventListener("click", () => saveFoodById(button.dataset.saveFood)));
-  } catch {
-    toast("Code-barres non trouvé.");
-  }
-}
-
-function offToFood(product) {
-  const nutriments = product?.nutriments;
-  if (!product?.product_name || !nutriments?.["energy-kcal_100g"]) return null;
+function favoriteFromItems(name, type, items) {
+  const total = macroSum(items);
   return {
-    id: `off-${product.code || id()}`,
-    name: product.product_name,
-    portion: "100 g",
-    kcal: Number(nutriments["energy-kcal_100g"] || 0),
-    protein: Number(nutriments.proteins_100g || 0),
-    carbs: Number(nutriments.carbohydrates_100g || 0),
-    fat: Number(nutriments.fat_100g || 0),
-    category: "Open Food Facts",
-    tags: ["produit français", "sauvegardable"],
-    source: "OFF"
+    id: uid(),
+    name,
+    type,
+    items,
+    ...total,
+    createdAt: new Date().toISOString()
   };
 }
 
-function renderSnacks() {
-  setTitle("Collations rapides");
-  $("#screen").innerHTML = `
-    <section class="section"><span>Objectifs rapides</span><h2>Collations prise de masse</h2></section>
-    <div class="grid">${quickSnacks.map((snack) => snackCard(snack)).join("")}</div>
-    <section class="section"><span>Personnalisées</span><h2>Créer une collation</h2></section>
-    <article class="card">${customSnackForm()}</article>
-    <div class="grid" style="margin-top:12px">${customSnacks.length ? customSnacks.map((snack) => snackCard(snack, true)).join("") : `<p class="empty">Aucune collation personnalisée.</p>`}</div>`;
-  $$("[data-add-snack]").forEach((button) => button.addEventListener("click", () => addSnack(button.dataset.addSnack)));
-  $$("[data-delete-snack]").forEach((button) => button.addEventListener("click", async () => {
-    await deleteOne("customSnacks", button.dataset.deleteSnack);
-    if (editingSnackId === button.dataset.deleteSnack) editingSnackId = null;
+function entryFromFavorite(favorite, mealType = favorite.type || "déjeuner", extra = {}) {
+  const total = macroSum(favorite.items?.length ? favorite.items : [favorite]);
+  return {
+    id: uid(),
+    date: journalDate || today(),
+    mealType: MEALS.includes(mealType) ? mealType : "déjeuner",
+    name: favorite.name,
+    quantity: favorite.quantity || "1 portion",
+    ...total,
+    items: favorite.items?.length ? favorite.items : [{ name: favorite.name, quantity: favorite.quantity || "1 portion", ...total }],
+    source: "favori/local",
+    createdAt: new Date().toISOString(),
+    ...extra
+  };
+}
+
+async function saveFavoriteFromEntry(entry) {
+  await putOne("favorites", favoriteFromItems(entry.name, entry.mealType, entry.items?.length ? entry.items : [{ name: entry.name, quantity: entry.quantity, kcal: entry.kcal, protein: entry.protein, carbs: entry.carbs, fat: entry.fat }]));
+  await refreshState();
+}
+
+function bindFavoriteButtons() {
+  $$("[data-add-favorite]").forEach((button) => button.addEventListener("click", async () => {
+    const favorite = favorites.find((item) => item.id === button.dataset.addFavorite);
+    if (!favorite) return;
+    await putOne("entries", entryFromFavorite(favorite));
     await refreshState();
-    renderSnacks();
+    toast("Favori ajouté au journal.");
   }));
-  $$("[data-edit-snack]").forEach((button) => button.addEventListener("click", () => {
-    editingSnackId = button.dataset.editSnack;
-    renderSnacks();
+  $$("[data-delete-favorite]").forEach((button) => button.addEventListener("click", async () => {
+    await deleteOne("favorites", button.dataset.deleteFavorite);
+    await refreshState();
+    render();
   }));
-  $("#cancel-snack-edit")?.addEventListener("click", () => {
-    editingSnackId = null;
-    renderSnacks();
-  });
-  $("#custom-snack-form").addEventListener("submit", saveCustomSnack);
-}
-
-function snackCard(snack, custom = false) {
-  return `<article class="card"><div class="row"><div><p class="muted-label">${custom ? "personnalisée" : `${snack.target} kcal`}</p><h3>${esc(snack.name)}</h3><p class="small">${esc(snack.items || snack.quantity || "")}</p></div><strong>${fmt(snack.kcal)} kcal</strong></div><p class="macro-line">P ${fmt(snack.protein,1)} · G ${fmt(snack.carbs,1)} · L ${fmt(snack.fat,1)}</p><div class="row" style="margin-top:12px"><button class="primary-button" data-add-snack="${esc(snack.id || snack.name)}">Ajouter aujourd’hui</button>${custom ? `<button class="secondary-button" data-edit-snack="${esc(snack.id)}">Modifier</button><button class="danger-button" data-delete-snack="${esc(snack.id)}">Supprimer</button>` : ""}</div></article>`;
-}
-
-async function addSnack(snackId) {
-  const snack = [...quickSnacks, ...customSnacks].find((item) => (item.id || item.name) === snackId);
-  if (!snack) return;
-  await putOne("entries", { id: id(), date: today(), mealType: "collations", name: snack.name, quantity: snack.items || snack.quantity || "", kcal: snack.kcal, protein: snack.protein, carbs: snack.carbs, fat: snack.fat, source: "collation" });
-  await refreshState();
-  toast("Collation ajoutée.");
-  renderSnacks();
-}
-
-function customSnackForm() {
-  const snack = customSnacks.find((item) => item.id === editingSnackId) || {};
-  const isEditing = Boolean(snack.id);
-  return `<form id="custom-snack-form"><input name="id" type="hidden" value="${esc(snack.id || "")}"><div class="form-grid"><label>Nom<input name="name" value="${esc(snack.name || "")}" required></label><label>Quantité<input name="quantity" value="${esc(snack.quantity || "")}" required></label><label>Kcal<input name="kcal" type="number" value="${esc(snack.kcal || "")}" required></label><label>Protéines<input name="protein" type="number" step=".1" value="${esc(snack.protein || "")}" required></label><label>Glucides<input name="carbs" type="number" step=".1" value="${esc(snack.carbs || "")}" required></label><label>Lipides<input name="fat" type="number" step=".1" value="${esc(snack.fat || "")}" required></label></div><div class="row" style="margin-top:14px"><button class="primary-button">${isEditing ? "Modifier" : "Sauvegarder"}</button>${isEditing ? `<button id="cancel-snack-edit" class="secondary-button" type="button">Annuler</button>` : ""}</div></form>`;
-}
-
-async function saveCustomSnack(event) {
-  event.preventDefault();
-  const data = Object.fromEntries(new FormData(event.currentTarget));
-  await putOne("customSnacks", { id: data.id || id(), name: data.name, quantity: data.quantity, kcal: Number(data.kcal), protein: Number(data.protein), carbs: Number(data.carbs), fat: Number(data.fat) });
-  editingSnackId = null;
-  await refreshState();
-  toast(data.id ? "Collation modifiée." : "Collation sauvegardée.");
-  renderSnacks();
 }
 
 function renderPhoto() {
-  setTitle("Photo assistée");
-  const total = macros(composer);
-  const consumed = { kcal: Math.round(total.kcal * photoState.percent / 100), protein: +(total.protein * photoState.percent / 100).toFixed(1), carbs: +(total.carbs * photoState.percent / 100).toFixed(1), fat: +(total.fat * photoState.percent / 100).toFixed(1) };
+  setTitle("Photo repas");
+  const total = macroSum(photoDraft.items);
+  const factor = photoDraft.percent / 100;
+  const consumed = {
+    kcal: round(total.kcal * factor),
+    protein: round(total.protein * factor),
+    carbs: round(total.carbs * factor),
+    fat: round(total.fat * factor)
+  };
   $("#screen").innerHTML = `
-    <article class="card"><p class="muted-label">Mode assisté</p><h2>Photo avant / après assiette</h2><p class="small">Estimation approximative. Corrige les aliments, les quantités et le pourcentage réellement mangé.</p></article>
-    <div class="photo-grid" style="margin-top:12px">
-      <article class="card"><label>Photo avant repas<input id="photo-before" type="file" accept="image/*" capture="environment"></label>${photoState.before ? `<img class="photo-preview" src="${photoState.before}" alt="Photo avant">` : ""}</article>
-      <article class="card"><label>Photo après repas<input id="photo-after" type="file" accept="image/*" capture="environment"></label>${photoState.after ? `<img class="photo-preview" src="${photoState.after}" alt="Photo après">` : ""}</article>
+    <article class="card hero-card">
+      <p class="muted-label">Sans IA automatique</p>
+      <h1>Photo repas</h1>
+      <p class="small">La photo sert de repère visuel. Compose le repas avec les aliments ou favoris pour calculer les calories.</p>
+    </article>
+    <div class="photo-grid">
+      <article class="card"><label>Prendre / importer photo avant<input id="photo-before" type="file" accept="image/*" capture="environment"></label>${photoDraft.before ? `<img class="photo-preview" src="${photoDraft.before}" alt="Photo avant repas">` : ""}</article>
+      <article class="card"><label>Photo après repas optionnelle<input id="photo-after" type="file" accept="image/*" capture="environment"></label>${photoDraft.after ? `<img class="photo-preview" src="${photoDraft.after}" alt="Photo après repas">` : ""}</article>
     </div>
-    <article class="card" style="margin-top:12px"><h2>Composer ce repas</h2><input id="photo-food-search" placeholder="Rechercher un aliment local"><div id="photo-food-results" class="food-list"></div><div class="journal-list" style="margin-top:12px">${composer.length ? composer.map((item, index) => `<div class="journal-row row"><div><b>${esc(item.name)}</b><span class="macro-line">${fmt(item.kcal)} kcal</span></div><button class="danger-button" data-remove-compose="${index}">×</button></div>`).join("") : `<p class="empty">Ajoute les aliments supposés du plat.</p>`}</div><label style="margin-top:12px">Pourcentage mangé<select id="percent-eaten"><option>25</option><option>50</option><option>75</option><option>100</option></select></label><p class="macro-line" style="margin-top:12px">Calories consommées estimées : ${fmt(consumed.kcal)} kcal · P ${fmt(consumed.protein,1)} · G ${fmt(consumed.carbs,1)} · L ${fmt(consumed.fat,1)}</p><button id="add-photo-meal" class="primary-button" style="width:100%;margin-top:12px">Ajouter au journal du jour</button></article>`;
-  $("#percent-eaten").value = String(photoState.percent);
-  $("#percent-eaten").addEventListener("change", (event) => { photoState.percent = Number(event.target.value); renderPhoto(); });
+    <article class="card">
+      <h2>Composer le repas</h2>
+      <input id="photo-food-search" placeholder="Chercher un aliment ou plat local">
+      <div id="photo-food-results" class="food-list"></div>
+      <h3>Favoris</h3>
+      <div class="food-list">${favorites.slice(0, 6).map((fav) => `<div class="food-row"><div><b>${esc(fav.name)}</b><span class="macro-line">${fmt(fav.kcal)} kcal</span></div><button class="secondary-button" data-photo-favorite="${esc(fav.id)}">Ajouter</button></div>`).join("") || `<p class="empty">Pas encore de favori.</p>`}</div>
+      <div class="journal-list">${photoDraft.items.length ? photoDraft.items.map((item, index) => `<div class="journal-row row"><div><b>${esc(item.name)}</b><span class="macro-line">${esc(item.quantity)} · ${fmt(item.kcal)} kcal</span></div><button class="danger-button" data-remove-photo-item="${index}">×</button></div>`).join("") : `<p class="empty">Ajoute les aliments visibles dans l’assiette.</p>`}</div>
+      <div class="form-grid">
+        <label>Repas${select("photoMealType", MEALS.map((meal) => [meal, meal]), photoDraft.mealType)}</label>
+        <label>Pourcentage mangé${select("photoPercent", [["25", "25 %"], ["50", "50 %"], ["75", "75 %"], ["100", "100 %"]], String(photoDraft.percent))}</label>
+      </div>
+      <p class="macro-line">Résumé consommé : ${fmt(consumed.kcal)} kcal · P ${fmt(consumed.protein, 1)} · G ${fmt(consumed.carbs, 1)} · L ${fmt(consumed.fat, 1)}</p>
+      <div class="row buttons-row">
+        <button id="add-photo-journal" class="primary-button">Ajouter au journal</button>
+        <button id="save-photo-favorite" class="secondary-button">Enregistrer comme favori</button>
+      </div>
+    </article>`;
   $("#photo-before").addEventListener("change", (event) => readPhoto(event, "before"));
   $("#photo-after").addEventListener("change", (event) => readPhoto(event, "after"));
-  bindPhotoSearch();
-  $$("[data-remove-compose]").forEach((button) => button.addEventListener("click", () => { composer.splice(Number(button.dataset.removeCompose), 1); renderPhoto(); }));
-  $("#add-photo-meal").addEventListener("click", async () => {
-    if (!composer.length) return toast("Ajoute au moins un aliment.");
-    await putOne("entries", { id: id(), date: today(), mealType: "déjeuner", name: "Repas photo assisté", quantity: `${photoState.percent}% mangé`, ...consumed, source: "photo assistée" });
-    composer = [];
-    photoState = { before: "", after: "", percent: 100 };
-    await refreshState();
-    toast("Repas ajouté.");
-    navigate("journal");
-  });
+  $("select[name='photoPercent']").addEventListener("change", (event) => { photoDraft.percent = parseNum(event.target.value, 100); renderPhoto(); });
+  $("select[name='photoMealType']").addEventListener("change", (event) => { photoDraft.mealType = event.target.value; });
+  bindPhotoFoodSearch();
+  $$("[data-photo-favorite]").forEach((button) => button.addEventListener("click", () => {
+    const fav = favorites.find((item) => item.id === button.dataset.photoFavorite);
+    if (fav?.items?.length) photoDraft.items.push(...fav.items);
+    renderPhoto();
+  }));
+  $$("[data-remove-photo-item]").forEach((button) => button.addEventListener("click", () => { photoDraft.items.splice(Number(button.dataset.removePhotoItem), 1); renderPhoto(); }));
+  $("#add-photo-journal").addEventListener("click", addPhotoMealToJournal);
+  $("#save-photo-favorite").addEventListener("click", savePhotoFavorite);
 }
 
 function readPhoto(event, key) {
   const file = event.target.files?.[0];
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = () => { photoState[key] = reader.result; renderPhoto(); };
+  reader.onload = () => {
+    photoDraft[key] = reader.result;
+    renderPhoto();
+  };
   reader.readAsDataURL(file);
 }
 
-function bindPhotoSearch() {
+function bindPhotoFoodSearch() {
   const input = $("#photo-food-search");
   const results = $("#photo-food-results");
   const update = () => {
-    const query = input.value.toLowerCase();
-    const list = foods.filter((food) => !query || food.name.toLowerCase().includes(query)).slice(0, 8);
-    results.innerHTML = list.map((food) => `<div class="food-row"><div><b>${esc(food.name)}</b><span class="macro-line">${esc(food.portion)} · ${fmt(food.kcal)} kcal</span></div><button class="primary-button" data-compose="${esc(food.id)}">Ajouter</button></div>`).join("");
-    $$("[data-compose]", results).forEach((button) => button.addEventListener("click", () => {
-      const food = foods.find((item) => item.id === button.dataset.compose);
-      composer.push(food);
+    results.innerHTML = searchFoods(input.value, 10).map((food) => `<div class="food-row"><div><b>${esc(food.name)}</b><span class="macro-line">${esc(food.portionLabel)} · ${fmt(food.kcal)} kcal</span></div><div class="food-actions"><input data-photo-qty="${esc(food.id)}" inputmode="decimal" value="1"><button class="primary-button" data-photo-food="${esc(food.id)}">Ajouter</button></div></div>`).join("");
+    $$("[data-photo-food]", results).forEach((button) => button.addEventListener("click", () => {
+      const food = allFoods().find((item) => item.id === button.dataset.photoFood);
+      const qty = parseNum(results.querySelector(`[data-photo-qty="${attr(button.dataset.photoFood)}"]`)?.value, 1);
+      photoDraft.items.push(scaleFood(food, qty));
       renderPhoto();
     }));
   };
@@ -620,48 +873,121 @@ function bindPhotoSearch() {
   update();
 }
 
+async function addPhotoMealToJournal() {
+  if (!photoDraft.items.length) return toast("Compose d’abord le repas.");
+  const total = macroSum(photoDraft.items);
+  const factor = photoDraft.percent / 100;
+  const consumedItems = photoDraft.items.map((item) => ({
+    ...item,
+    quantity: `${item.quantity} · ${photoDraft.percent}% mangé`,
+    kcal: round(item.kcal * factor),
+    protein: round(item.protein * factor),
+    carbs: round(item.carbs * factor),
+    fat: round(item.fat * factor)
+  }));
+  await putOne("entries", {
+    id: uid(),
+    date: journalDate || today(),
+    mealType: photoDraft.mealType,
+    name: "Repas photo",
+    quantity: `${photoDraft.percent}% mangé`,
+    kcal: round(total.kcal * factor),
+    protein: round(total.protein * factor),
+    carbs: round(total.carbs * factor),
+    fat: round(total.fat * factor),
+    items: consumedItems,
+    photos: { before: photoDraft.before, after: photoDraft.after },
+    source: "photo repas locale",
+    createdAt: new Date().toISOString()
+  });
+  photoDraft = { before: "", after: "", percent: 100, items: [], mealType: "déjeuner" };
+  await refreshState();
+  toast("Repas photo ajouté.");
+  navigate("journal");
+}
+
+async function savePhotoFavorite() {
+  if (!photoDraft.items.length) return toast("Ajoute au moins un aliment.");
+  await putOne("favorites", favoriteFromItems("Repas photo type", photoDraft.mealType, photoDraft.items));
+  await refreshState();
+  toast("Repas photo enregistré en favori.");
+}
+
+function renderFavorites() {
+  setTitle("Favoris");
+  const byType = favorites.reduce((groups, fav) => {
+    const key = fav.type || "favori";
+    groups[key] = groups[key] || [];
+    groups[key].push(fav);
+    return groups;
+  }, {});
+  $("#screen").innerHTML = `
+    <article class="card hero-card"><p class="muted-label">1 clic</p><h1>Repas types et favoris</h1><p class="small">Petit-déjeuner type, collation favorite, repas complet : ajoute ce que tu manges souvent sans tout ressaisir.</p></article>
+    ${Object.keys(byType).length ? Object.entries(byType).map(([type, list]) => `<section class="section"><span>${esc(type)}</span><h2>${esc(type)}</h2></section><div class="food-list">${list.map(favoriteRow).join("")}</div>`).join("") : `<article class="card"><p class="empty">Aucun favori. Depuis un repas du journal, une recette ou la photo, appuie sur ★.</p></article>`}`;
+  bindFavoriteButtons();
+}
+
 function renderRecipes() {
   setTitle("Recettes");
-  $("#screen").innerHTML = `<section class="section"><span>Hypercalorique</span><h2>Recettes simples</h2></section><div class="recipe-list">${recipes.map((recipe) => `<article class="card recipe-row"><div class="row"><div><p class="muted-label">${esc(recipe.category)} · ${esc(recipe.cost)}</p><h3>${esc(recipe.name)}</h3></div><strong>${fmt(recipe.kcal)} kcal</strong></div><p class="macro-line">P ${fmt(recipe.protein,1)} · G ${fmt(recipe.carbs,1)} · L ${fmt(recipe.fat,1)}</p><details><summary>Ingrédients et étapes</summary><p class="small"><b>Ingrédients :</b> ${recipe.ingredients.map(esc).join(", ")}</p><ol class="small">${recipe.steps.map((step) => `<li>${esc(step)}</li>`).join("")}</ol></details><div class="row" style="margin-top:12px"><button class="primary-button" data-add-recipe="${recipe.id}">Ajouter au journal</button><button class="secondary-button" data-fav-recipe="${recipe.id}">${favorites.some((fav) => fav.id === recipe.id) ? "Favori ✓" : "Favori"}</button></div></article>`).join("")}</div>`;
+  $("#screen").innerHTML = `
+    <section class="section"><span>Prise de poids</span><h2>${recipes.length} recettes simples</h2></section>
+    <div class="recipe-list">${recipes.map((recipe) => `<article class="card recipe-row">
+      <div class="row"><div><p class="muted-label">${esc(recipe.type || recipe.category)} · ${esc(recipe.budget || recipe.cost || "€€")}</p><h3>${esc(recipe.name)}</h3></div><strong>${fmt(recipe.kcal)} kcal</strong></div>
+      <p class="macro-line">P ${fmt(recipe.protein, 1)} · G ${fmt(recipe.carbs, 1)} · L ${fmt(recipe.fat, 1)}</p>
+      <details><summary>Ingrédients et étapes</summary><p class="small"><b>Ingrédients :</b> ${(recipe.ingredients || []).map(esc).join(", ")}</p><ol class="small">${(recipe.steps || []).map((step) => `<li>${esc(step)}</li>`).join("")}</ol></details>
+      <div class="row buttons-row"><button class="primary-button" data-add-recipe="${esc(recipe.id)}">Ajouter au journal</button><button class="secondary-button" data-fav-recipe="${esc(recipe.id)}">Mettre en favori</button></div>
+    </article>`).join("")}</div>`;
   $$("[data-add-recipe]").forEach((button) => button.addEventListener("click", async () => {
     const recipe = recipes.find((item) => item.id === button.dataset.addRecipe);
-    await putOne("entries", { id: id(), date: today(), mealType: "dîner", name: recipe.name, quantity: "1 portion", kcal: recipe.kcal, protein: recipe.protein, carbs: recipe.carbs, fat: recipe.fat, source: "recette" });
+    const fav = favoriteFromItems(recipe.name, recipe.type || "déjeuner", [{ name: recipe.name, quantity: "1 portion", kcal: recipe.kcal, protein: recipe.protein, carbs: recipe.carbs, fat: recipe.fat }]);
+    await putOne("entries", entryFromFavorite(fav, recipe.type === "petit-déjeuner" ? "petit-déjeuner" : recipe.type === "collation" ? "collations" : "déjeuner"));
     await refreshState();
     toast("Recette ajoutée.");
   }));
   $$("[data-fav-recipe]").forEach((button) => button.addEventListener("click", async () => {
     const recipe = recipes.find((item) => item.id === button.dataset.favRecipe);
-    if (favorites.some((fav) => fav.id === recipe.id)) await deleteOne("favorites", recipe.id);
-    else await putOne("favorites", { id: recipe.id, name: recipe.name });
+    await putOne("favorites", favoriteFromItems(recipe.name, recipe.type || "recette", [{ name: recipe.name, quantity: "1 portion", kcal: recipe.kcal, protein: recipe.protein, carbs: recipe.carbs, fat: recipe.fat }]));
     await refreshState();
-    renderRecipes();
+    toast("Recette ajoutée aux favoris.");
   }));
 }
 
 function renderTips() {
-  setTitle("Astuces du jour");
-  const dayTip = tips[new Date().getDate() % tips.length];
-  $("#screen").innerHTML = `<article class="card hero-card"><p class="muted-label">${esc(dayTip.category)}</p><h1>${esc(dayTip.title)}</h1><p class="small">${esc(dayTip.body)}</p></article><section class="section"><span>Résultat rapide</span><h2>Cartes motivantes</h2></section><div class="tip-list">${tips.map((tip) => `<article class="card tip-row"><p class="muted-label">${esc(tip.category)}</p><h3>${esc(tip.title)}</h3><p class="small">${esc(tip.body)}</p></article>`).join("")}</div>`;
+  setTitle("Astuces");
+  const dayTip = tips[new Date().getDate() % tips.length] || tips[0];
+  $("#screen").innerHTML = `
+    <article class="card hero-card"><p class="muted-label">${esc(dayTip?.category || "astuce")}</p><h1>${esc(dayTip?.title || "Astuce du jour")}</h1><p class="small">${esc(dayTip?.body || "")}</p></article>
+    <section class="section"><span>Concret</span><h2>${tips.length} astuces rapides</h2></section>
+    <div class="tip-list">${tips.map((tip) => `<article class="card tip-row"><p class="muted-label">${esc(tip.category)}</p><h3>${esc(tip.title)}</h3><p class="small">${esc(tip.body)}</p></article>`).join("")}</div>`;
 }
 
 function renderProfile() {
-  setTitle("Profil local");
-  $("#screen").innerHTML = `<article class="card"><div class="row"><div><p class="muted-label">Aucun compte</p><h2>${esc(profile.firstName || "Profil local")}</h2></div><strong>IMC ${fmt(bmiValue(),1)}</strong></div><p class="small">${esc(profile.paceAdvice)} · ${fmt(profile.calorieGoal)} kcal · ${fmt(profile.proteinGoal)} g protéines · ${fmt(profile.waterGoal)} ml eau</p>${bmiValue() < 17.5 ? `<p class="warning">suivi médical recommandé en cas de maigreur importante</p>` : ""}</article><article class="card"><h2>Données locales</h2><div class="grid two"><button id="edit-profile" class="secondary-button">Modifier onboarding</button><button id="export-data" class="secondary-button">Exporter mes données</button><button id="delete-data" class="danger-button">Supprimer toutes mes données</button><button id="install-help" class="secondary-button">Installer l’app</button></div></article><article class="card"><h2>Sécurité</h2><p class="small">Les données restent dans IndexedDB sur cet appareil. Open Food Facts n’est appelé que lorsque tu lances volontairement une recherche en ligne.</p></article>`;
-  $("#edit-profile").addEventListener("click", () => { profile = null; renderOnboarding(1, defaultProfile); });
+  setTitle("Profil");
+  $("#screen").innerHTML = `
+    <article class="card">
+      <div class="row"><div><p class="muted-label">Aucun compte</p><h2>${esc(profile.firstName || "Profil local")}</h2></div><strong>IMC ${fmt(bmiValue(), 1)}</strong></div>
+      <p class="small">${esc(profile.paceAdvice)} · ${fmt(profile.calorieGoal)} kcal · ${fmt(profile.proteinGoal)} g protéines · ${fmt(profile.waterGoal)} ml eau</p>
+      ${bmiValue() < 17.5 ? `<p class="warning">Suivi médical recommandé en cas de maigreur importante.</p>` : ""}
+    </article>
+    <article class="card">
+      <h2>Données locales</h2>
+      <div class="grid two">
+        <button id="edit-profile" class="secondary-button">Modifier onboarding</button>
+        <button id="export-data" class="secondary-button">Exporter mes données</button>
+        <button id="delete-data" class="danger-button">Supprimer toutes mes données</button>
+        <button id="install-help" class="secondary-button">Installer l’app</button>
+      </div>
+    </article>
+    <article class="card"><h2>Confidentialité</h2><p class="small">IndexedDB local, pas de compte, pas d’e-mail. Les photos de repas restent dans l’appareil.</p></article>`;
+  $("#edit-profile").addEventListener("click", () => { profile = null; renderOnboarding(); });
   $("#export-data").addEventListener("click", exportJson);
   $("#delete-data").addEventListener("click", deleteAllData);
-  $("#install-help").addEventListener("click", () => toast("Android : Chrome > Installer. iPhone : Safari > Partager > Sur l’écran d’accueil."));
+  $("#install-help").addEventListener("click", () => toast("iPhone : Safari > Partager > Sur l’écran d’accueil. Android : Chrome > Installer."));
 }
 
 async function exportJson() {
-  const payload = { profile, entries, weights, savedFoods, customSnacks, favorites, exportedAt: new Date().toISOString() };
+  const payload = { profile, entries, weights, savedFoods, customSnacks, favorites, waterToday, exportedAt: new Date().toISOString() };
   download(`mass-plus-${today()}.json`, JSON.stringify(payload, null, 2), "application/json");
-}
-
-function exportCsv() {
-  const header = "date,repas,nom,quantite,kcal,proteines,glucides,lipides,source";
-  const rows = entries.map((entry) => [entry.date, entry.mealType, entry.name, entry.quantity, entry.kcal, entry.protein, entry.carbs, entry.fat, entry.source].map((value) => `"${String(value ?? "").replaceAll('"', '""')}"`).join(","));
-  download(`mass-plus-journal-${today()}.csv`, [header, ...rows].join("\n"), "text/csv");
 }
 
 function download(filename, content, type) {
@@ -676,36 +1002,34 @@ function download(filename, content, type) {
 
 async function deleteAllData() {
   if (!confirm("Supprimer toutes les données locales Mass+ ?")) return;
-  await Promise.all(["settings", "entries", "weights", "savedFoods", "customSnacks", "favorites", "water"].map(clearStore));
+  await Promise.all(STORE_NAMES.map(clearStore));
   localStorage.removeItem(PREF_SCREEN);
-  await refreshState();
+  profile = null;
   activeScreen = "dashboard";
-  toast("Données supprimées.");
+  await refreshState();
   render();
 }
 
 async function init() {
   db = await openDb();
   [foods, recipes, tips] = await Promise.all([
-    loadJson("./foods.fr.json"),
-    loadJson("./recipes.fr.json"),
-    loadJson("./tips.fr.json")
+    loadJson(["./data/aliments-fr.json", "./foods.fr.json"]),
+    loadJson(["./data/recettes-fr.json", "./recipes.fr.json"]),
+    loadJson(["./data/astuces-fr.json", "./tips.fr.json"])
   ]);
+  foods = foods.map((food) => ({ ...food, _search: foodSearchText(food) }));
   await refreshState();
-  if (location.hash) activeScreen = location.hash.replace("#", "");
-  $("#install-hint").addEventListener("click", () => toast("Android : Chrome > Installer. iPhone : Safari > Partager > Sur l’écran d’accueil."));
+  if (location.hash) activeScreen = normalizeScreen(location.hash.replace("#", ""));
+  $("#install-hint").addEventListener("click", () => toast("iPhone : Safari > Partager > Sur l’écran d’accueil. Android : Chrome > Installer."));
   if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("./service-worker.js").catch(() => undefined));
   window.addEventListener("hashchange", () => {
-    const next = location.hash.replace("#", "");
-    if (NAV.some(([screen]) => screen === next)) {
-      activeScreen = next;
-      render();
-    }
+    activeScreen = normalizeScreen(location.hash.replace("#", ""));
+    render();
   });
   render();
 }
 
 init().catch((error) => {
   console.error(error);
-  $("#screen").innerHTML = `<article class="card"><h2>Impossible d’ouvrir Mass+</h2><p class="small">Vérifie que le navigateur autorise IndexedDB.</p></article>`;
+  $("#screen").innerHTML = `<article class="card"><h2>Impossible d’ouvrir Mass+</h2><p class="small">Vérifie que le navigateur autorise IndexedDB et recharge la page.</p></article>`;
 });

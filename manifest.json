@@ -15,8 +15,8 @@
     { "src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
   ],
   "shortcuts": [
-    { "name": "Ajouter un repas", "short_name": "Journal", "url": "./#journal", "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192" }] },
-    { "name": "Collation rapide", "short_name": "Collations", "url": "./#snacks", "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192" }] },
-    { "name": "Photo assistée", "short_name": "Photo", "url": "./#photo", "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192" }] }
+    { "name": "Ajouter un repas", "short_name": "Ajouter", "url": "./#add", "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Photo repas", "short_name": "Photo", "url": "./#photo", "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Repas favoris", "short_name": "Favoris", "url": "./#favorites", "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192" }] }
   ]
 }
