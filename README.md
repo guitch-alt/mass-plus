@@ -22,10 +22,27 @@ python3 -m http.server 8080
 Puis ouvrir :
 
 ```text
-http://localhost:8080/?v=mobile-v2
+http://localhost:8080/?v=android-first
 ```
 
-Le paramètre `?v=mobile-v2` aide à contourner un ancien cache PWA pendant le développement.
+Le paramètre `?v=android-first` aide à contourner un ancien cache PWA pendant le développement.
+
+## GitHub Pages
+
+L’application est une PWA statique : `index.html` est à la racine et tous les chemins utilisent `./`, ce qui est compatible avec :
+
+```text
+https://guitch-alt.github.io/mass-plus/
+```
+
+Si cette URL affiche `There isn't a GitHub Pages site here`, le problème vient de la configuration GitHub Pages ou du déploiement, pas de l’absence de `index.html`. Le dépôt contient un workflow `.github/workflows/deploy-pages.yml` pour publier la racine du dépôt via GitHub Actions.
+
+Dans GitHub, vérifier :
+
+1. Repository **Settings**.
+2. **Pages**.
+3. Source : **GitHub Actions**.
+4. Lancer/pousser la branche `main`.
 
 ## Installer sur Android
 

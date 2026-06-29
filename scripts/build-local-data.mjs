@@ -199,6 +199,7 @@ const combos = [
 
 function foodRecord(row) {
   const [name, aliases, category, portionLabel, portionGrams, kcal, protein, carbs, fat, tagList, note] = row;
+  const per100 = portionGrams ? 100 / portionGrams : 1;
   return {
     id: slug(name),
     name,
@@ -206,6 +207,10 @@ function foodRecord(row) {
     category,
     portionLabel,
     portionGrams,
+    kcalPer100g: Math.round(kcal * per100),
+    proteinPer100g: Number((protein * per100).toFixed(1)),
+    carbsPer100g: Number((carbs * per100).toFixed(1)),
+    fatPer100g: Number((fat * per100).toFixed(1)),
     kcal,
     protein,
     carbs,

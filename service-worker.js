@@ -1,4 +1,4 @@
-const CACHE_NAME = "mass-plus-pwa-v4";
+const CACHE_NAME = "mass-plus-pwa-v5";
 const APP_SHELL = [
   "./",
   "./index.html",

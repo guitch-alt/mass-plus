@@ -415,6 +415,7 @@ function renderDashboard() {
       <button data-go="add">Ajouter</button>
       <button data-go="photo">Photo repas</button>
       <button data-go="favorites">Favori</button>
+      <button data-go="add">Collation rapide</button>
     </div>
     <div class="grid four">
       ${metric("Protéines", `${fmt(total.protein, 1)} g`)}
@@ -470,6 +471,7 @@ function renderJournal() {
       <button data-go="add">Ajouter</button>
       <button data-go="photo">Photo repas</button>
       <button data-go="favorites">Favori</button>
+      <button data-go="add">Collation rapide</button>
     </div>
     <section class="section"><span>Repas du jour</span><h2>Ce qui est déjà ajouté</h2></section>
     <div class="meal-columns">${MEALS.map((meal) => mealCard(meal, list.filter((entry) => entry.mealType === meal))).join("")}</div>`;
@@ -970,6 +972,13 @@ function renderProfile() {
       ${bmiValue() < 17.5 ? `<p class="warning">Suivi médical recommandé en cas de maigreur importante.</p>` : ""}
     </article>
     <article class="card">
+      <h2>Poids actuel</h2>
+      <form id="weight-form" class="form-grid">
+        <label>Poids aujourd’hui (kg)<input name="weight" inputmode="decimal" value="${esc(profile.currentWeight)}"></label>
+        <button class="primary-button">Enregistrer le poids</button>
+      </form>
+    </article>
+    <article class="card">
       <h2>Données locales</h2>
       <div class="grid two">
         <button id="edit-profile" class="secondary-button">Modifier onboarding</button>
@@ -979,10 +988,22 @@ function renderProfile() {
       </div>
     </article>
     <article class="card"><h2>Confidentialité</h2><p class="small">IndexedDB local, pas de compte, pas d’e-mail. Les photos de repas restent dans l’appareil.</p></article>`;
+  $("#weight-form").addEventListener("submit", saveWeight);
   $("#edit-profile").addEventListener("click", () => { profile = null; renderOnboarding(); });
   $("#export-data").addEventListener("click", exportJson);
   $("#delete-data").addEventListener("click", deleteAllData);
   $("#install-help").addEventListener("click", () => toast("iPhone : Safari > Partager > Sur l’écran d’accueil. Android : Chrome > Installer."));
+}
+
+async function saveWeight(event) {
+  event.preventDefault();
+  const value = parseNum(new FormData(event.currentTarget).get("weight"), profile.currentWeight);
+  profile = { ...profile, currentWeight: value, ...estimateGoals({ ...profile, currentWeight: value }) };
+  await putOne("settings", { id: "profile", value: profile });
+  await putOne("weights", { id: `weight-${today()}`, date: today(), value });
+  await refreshState();
+  toast("Poids enregistré.");
+  renderProfile();
 }
 
 async function exportJson() {
