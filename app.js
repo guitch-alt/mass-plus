@@ -319,7 +319,7 @@ function navigate(screen) {
 function render() {
   renderNav();
   if (!profile) {
-    setTitle("Configurer Mass+");
+    setTitle("Mass+ Android First");
     renderOnboarding();
     return;
   }
@@ -341,7 +341,7 @@ function renderOnboarding() {
   $("#screen").innerHTML = `
     <article class="card hero-card">
       <p class="muted-label">Mode local/offline</p>
-      <h1>Mass+ t’aide à manger assez, sans te compliquer la vie.</h1>
+      <h1>Mass+ Android First</h1>
       <p class="small">Pas de compte, pas d’e-mail. Les données restent sur ce téléphone.</p>
     </article>
     <article class="card">

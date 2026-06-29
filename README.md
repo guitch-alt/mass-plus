@@ -35,14 +35,16 @@ L’application est une PWA statique : `index.html` est à la racine et tous les
 https://guitch-alt.github.io/mass-plus/
 ```
 
-Si cette URL affiche `There isn't a GitHub Pages site here`, le problème vient de la configuration GitHub Pages ou du déploiement, pas de l’absence de `index.html`. Le dépôt contient un workflow `.github/workflows/deploy-pages.yml` pour publier la racine du dépôt via GitHub Actions.
+Si cette URL affiche `There isn't a GitHub Pages site here`, le problème vient de la configuration GitHub Pages, du dépôt non public, ou d’un commit non poussé, pas de l’absence de `index.html`.
 
 Dans GitHub, vérifier :
 
 1. Repository **Settings**.
 2. **Pages**.
-3. Source : **GitHub Actions**.
-4. Lancer/pousser la branche `main`.
+3. Source : **Deploy from a branch**.
+4. Branch : `main`.
+5. Folder : `/root`.
+6. Save.
 
 ## Installer sur Android
 
