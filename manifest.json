@@ -1,7 +1,7 @@
 {
   "name": "Mass+",
   "short_name": "Mass+",
-  "description": "PWA locale/offline pour organiser une prise de poids rapide et saine.",
+  "description": "PWA mobile-first locale pour suivre repas, protéines, poids et prise de masse.",
   "lang": "fr",
   "start_url": "./",
   "scope": "./",
@@ -15,8 +15,7 @@
     { "src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
   ],
   "shortcuts": [
-    { "name": "Ajouter un repas", "short_name": "Ajouter", "url": "./#add", "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192" }] },
-    { "name": "Photo repas", "short_name": "Photo", "url": "./#photo", "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192" }] },
-    { "name": "Repas favoris", "short_name": "Favoris", "url": "./#favorites", "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192" }] }
+    { "name": "Journal alimentaire", "short_name": "Journal", "url": "./#journal", "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Suivi poids", "short_name": "Poids", "url": "./#weight", "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192" }] }
   ]
 }

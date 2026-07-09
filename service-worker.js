@@ -1,23 +1,18 @@
-const CACHE_NAME = "mass-plus-pwa-v5";
-const APP_SHELL = [
+const CACHE_NAME = "mass-plus-mvp-v1";
+const ASSETS = [
   "./",
   "./index.html",
   "./style.css",
   "./app.js",
   "./manifest.json",
   "./data/aliments-fr.json",
-  "./data/recettes-fr.json",
-  "./data/astuces-fr.json",
-  "./foods.fr.json",
-  "./recipes.fr.json",
-  "./tips.fr.json",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
   "./icons/apple-touch-icon.png"
 ];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)));
+  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)));
   self.skipWaiting();
 });
 
