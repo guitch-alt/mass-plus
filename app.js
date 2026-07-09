@@ -9,6 +9,26 @@ const NAV = [
   ["weight", "Poids", "◌"],
   ["profile", "Profil", "◎"]
 ];
+const DEFAULT_FAVORITES = [
+  {
+    id: "quick-skyr-banane-amandes",
+    name: "Skyr + banane + amandes",
+    meal: "collation",
+    items: [{ food: "skyr", grams: 150 }, { food: "banane", grams: 120 }, { food: "amandes", grams: 30 }]
+  },
+  {
+    id: "quick-pain-beurre-lait",
+    name: "Pain + beurre demi-sel + lait",
+    meal: "collation",
+    items: [{ food: "pain", grams: 80 }, { food: "beurre-demi-sel", grams: 15 }, { food: "lait-entier", grams: 250 }]
+  },
+  {
+    id: "quick-fromage-choco-noix",
+    name: "Fromage blanc + chocolat noir + noix",
+    meal: "collation",
+    items: [{ food: "fromage-blanc", grams: 200 }, { food: "chocolat-noir", grams: 30 }, { food: "noix", grams: 25 }]
+  }
+];
 
 let foods = [];
 let currentScreen = "home";
@@ -88,13 +108,16 @@ function latestWeight() {
   return sorted[0]?.weight || state.profile.currentWeight || 0;
 }
 
+function customFavorites() {
+  const defaultIds = new Set(DEFAULT_FAVORITES.map((favorite) => favorite.id));
+  return state.favorites.filter((favorite) => !defaultIds.has(favorite.id));
+}
+
 function seedFavorites() {
-  if (state.favorites.length) return;
-  state.favorites = [
-    { id: "fav-breakfast", name: "Petit déjeuner habituel", meal: "petit déjeuner", items: [{ food: "lait-entier", grams: 250 }, { food: "banane", grams: 120 }, { food: "flocons-avoine", grams: 60 }, { food: "beurre-cacahuete", grams: 20 }] },
-    { id: "fav-snack", name: "Collation prise de masse", meal: "collation", items: [{ food: "skyr", grams: 150 }, { food: "fruits-secs", grams: 40 }, { food: "amandes", grams: 30 }] },
-    { id: "fav-dinner", name: "Dîner rapide", meal: "dîner", items: [{ food: "riz", grams: 250 }, { food: "poulet", grams: 150 }, { food: "huile-olive", grams: 10 }] }
-  ];
+  const existingIds = new Set(state.favorites.map((favorite) => favorite.id));
+  const missingDefaults = DEFAULT_FAVORITES.filter((favorite) => !existingIds.has(favorite.id));
+  if (!missingDefaults.length) return;
+  state.favorites = [...missingDefaults, ...state.favorites];
   saveState();
 }
 
@@ -163,13 +186,27 @@ function renderHome() {
     <div class="button-grid">
       <button class="primary-button" id="goAdd">Ajouter un aliment</button>
       <button class="secondary-button" id="quickSnack">Collation rapide</button>
+      <button class="secondary-button" id="goWeight">Suivi poids</button>
     </div>
     <article class="card">
+      <h2>Collations rapides</h2>
+      <div class="stack">${DEFAULT_FAVORITES.map(favoriteCard).join("")}</div>
+    </article>
+    <article class="card">
       <h2>Repas favoris</h2>
-      <div class="stack">${state.favorites.map(favoriteCard).join("")}</div>
+      <div class="stack">${customFavorites().map(favoriteCard).join("") || `<p class="small">Sauvegarde un repas depuis l’onglet Favoris pour le retrouver ici.</p>`}</div>
     </article>`;
-  $("#goAdd").addEventListener("click", () => { currentScreen = "journal"; render(); });
-  $("#quickSnack").addEventListener("click", () => addFavorite("fav-snack"));
+  $("#goAdd").addEventListener("click", () => {
+    currentScreen = "journal";
+    history.replaceState(null, "", "#journal");
+    render();
+  });
+  $("#quickSnack").addEventListener("click", () => addFavorite("quick-skyr-banane-amandes"));
+  $("#goWeight").addEventListener("click", () => {
+    currentScreen = "weight";
+    history.replaceState(null, "", "#weight");
+    render();
+  });
   bindFavoriteButtons();
 }
 
@@ -288,10 +325,20 @@ function renderFavorites() {
   $("#screen").innerHTML = `
     <article class="card">
       <h2>Favoris</h2>
-      <p class="small">Trois repas simples ajoutables en un clic.</p>
+      <p class="small">Ajoute une collation ou un repas habituel en un clic.</p>
       <div class="stack">${state.favorites.map(favoriteCard).join("")}</div>
+    </article>
+    <article class="card">
+      <h2>Sauvegarder un repas</h2>
+      <p class="small">Enregistre un repas déjà ajouté aujourd’hui pour le réutiliser plus tard.</p>
+      <form id="favoriteForm" class="form-grid">
+        <label>Nom du favori<input name="name" placeholder="Collation du matin"></label>
+        <label>Repas<select name="meal">${MEALS.map((meal) => `<option>${esc(meal)}</option>`).join("")}</select></label>
+        <button class="primary-button">Sauvegarder le favori</button>
+      </form>
     </article>`;
   bindFavoriteButtons();
+  $("#favoriteForm").addEventListener("submit", saveFavoriteFromMeal);
 }
 
 function bindFavoriteButtons() {
@@ -311,7 +358,29 @@ function addFavorite(favoriteId) {
   saveState();
   toast("Favori ajouté.");
   currentScreen = "journal";
+  history.replaceState(null, "", "#journal");
   render();
+}
+
+function saveFavoriteFromMeal(event) {
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(event.currentTarget));
+  const meal = data.meal;
+  const mealItems = dayEntries().filter((entry) => entry.meal === meal);
+  if (!mealItems.length) {
+    toast("Ajoute d’abord un aliment dans ce repas.");
+    return;
+  }
+  const name = data.name.trim() || `Favori ${meal}`;
+  state.favorites.unshift({
+    id: id(),
+    name,
+    meal,
+    items: mealItems.map((entry) => ({ food: entry.foodId, grams: entry.grams }))
+  });
+  saveState();
+  toast("Favori sauvegardé.");
+  renderFavorites();
 }
 
 function renderWeight() {
