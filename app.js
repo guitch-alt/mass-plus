@@ -1,6 +1,6 @@
 "use strict";
 
-const APP_VERSION = "0.2.0";
+const APP_VERSION = "0.2.1";
 const STORAGE_KEY = "mass-plus-state-v2";
 const LEGACY_KEYS = ["mass-plus-mvp-v1", "mass-plus-state"];
 const PHOTO_DB = "mass-plus-photos";
@@ -187,7 +187,7 @@ function calculatedGoals() {
   let surplus = 0;
   if (target > weight) {
     surplus = result.bmi < 16 ? 300 : result.bmi < 18.5 ? 400 : 300;
-    if (result.bmi < 16) result.warning = "Votre IMC est très bas. Une prise de poids progressive et un accompagnement médical ou diététique sont recommandés.";
+    if (result.bmi < 16) result.warning = "IMC très bas : une prise de poids progressive avec accompagnement médical ou diététique est recommandée.";
   } else {
     result.message = "Mass+ est principalement conçu pour accompagner une prise de poids progressive.";
   }
@@ -371,7 +371,7 @@ function renderHome() {
       <button class="primary-button" id="goAdd">Ajouter un aliment</button>
       <button class="secondary-button" id="quickSnack">Collation rapide</button>
       <button class="secondary-button" id="goWeight">Suivi du poids</button>
-      <button class="secondary-button" id="goPhoto">Photographier mon repas</button>
+      <button class="secondary-button" id="goPhoto" aria-label="Photographier mon repas">Photo repas</button>
     </div>
     <article class="card">
       <div class="section-head"><h2>Collations rapides</h2><span class="small">Ajout individuel</span></div>
@@ -728,7 +728,15 @@ function saveFavoriteFromMeal(event) {
   const data = Object.fromEntries(new FormData(event.currentTarget));
   const mealItems = dayEntries().filter((entry) => entry.meal === data.meal);
   if (!mealItems.length) {
-    toast("Ajoute d’abord un aliment dans ce repas.");
+    state.favorites.unshift({
+      id: id(),
+      name: data.name.trim() || `Favori ${data.meal}`,
+      meal: data.meal,
+      items: []
+    });
+    saveState();
+    toast("Favori créé. Ajoute des aliments dedans.");
+    renderFavorites();
     return;
   }
   state.favorites.unshift({
