@@ -1,104 +1,45 @@
 # Mass+
 
-Mass+ est une PWA mobile-first pour organiser une prise de poids rapide et saine, sans compte en ligne.
+Mass+ est une PWA mobile-first pour suivre simplement une prise de poids progressive : repas, calories, protéines, poids, favoris, recettes, astuces et photos de repas.
 
-## Principes
-
-- Aucun email.
-- Aucune inscription.
-- Aucun serveur obligatoire.
-- Données stockées localement dans IndexedDB.
-- `localStorage` sert seulement à mémoriser des préférences simples comme le dernier écran ouvert.
-- Fonctionne hors ligne après le premier chargement.
-- Compatible GitHub Pages.
-
-## Lancer en local
-
-```bash
-cd /Users/certideal/Documents/GitHub/mass-plus
-python3 -m http.server 8080
-```
-
-Puis ouvrir :
-
-```text
-http://localhost:8080/?v=android-first
-```
-
-Le paramètre `?v=android-first` aide à contourner un ancien cache PWA pendant le développement.
-
-## GitHub Pages
-
-L’application est une PWA statique : `index.html` est à la racine et tous les chemins utilisent `./`, ce qui est compatible avec :
-
-```text
+URL publique :
 https://guitch-alt.github.io/mass-plus/
-```
 
-Si cette URL affiche `There isn't a GitHub Pages site here`, le problème vient de la configuration GitHub Pages, du dépôt non public, ou d’un commit non poussé, pas de l’absence de `index.html`.
+## État actuel
 
-Dans GitHub, vérifier :
+Version test fonctionnelle iPhone et Android via GitHub Pages.
 
-1. Repository **Settings**.
-2. **Pages**.
-3. Source : **Deploy from a branch**.
-4. Branch : `main`.
-5. Folder : `/root`.
-6. Save.
+- Installation iPhone : ouvrir l’URL dans Safari, puis Partager > Ajouter à l’écran d’accueil.
+- Installation Android : ouvrir l’URL dans Chrome, puis Installer l’application ou Ajouter à l’écran d’accueil.
+- Données locales uniquement : pas de compte, pas de Supabase, pas de backend.
+- Les photos sont stockées dans IndexedDB.
+- Le journal, le profil, les favoris et les aliments personnalisés sont stockés localement.
 
-## Installer sur Android
+## Fonctionnalités
 
-1. Ouvrir l’URL GitHub Pages dans Chrome.
-2. Menu Chrome.
-3. Choisir **Installer l’application** ou **Ajouter à l’écran d’accueil**.
-
-## Installer sur iPhone
-
-1. Ouvrir l’URL GitHub Pages dans Safari.
-2. Bouton **Partager**.
-3. **Sur l’écran d’accueil**.
-4. **Ajouter**.
-
-## Fonctionnement hors ligne
-
-Le service worker met en cache :
-
-- `index.html`
-- `style.css`
-- `app.js`
-- `manifest.json`
-- `data/aliments-fr.json`
-- `data/recettes-fr.json`
-- `data/astuces-fr.json`
-- `foods.fr.json`, `recipes.fr.json`, `tips.fr.json` comme chemins compatibles historiques
-- icônes PWA
-
-Après un premier chargement, l’app peut fonctionner en mode avion. La recherche alimentaire V1 utilise la base locale et les produits sauvegardés sur l’appareil.
-
-## Photo des plats
-
-La photo est un mode assisté, pas une IA magique :
-
-- photo avant repas ;
-- photo après repas ;
-- pourcentage mangé à corriger ;
-- aliments ajoutés manuellement depuis la base locale ;
-- favoris ajoutables ;
-- calories recalculées selon le pourcentage mangé.
+- Profil avec calcul automatique calories/protéines.
+- Suivi du poids.
+- Journal alimentaire par repas.
+- Recherche locale hors ligne.
+- Recherche Open Food Facts déclenchée manuellement.
+- Aliments personnalisés réutilisables.
+- Favoris contenant plusieurs aliments.
+- Recettes hypercaloriques filtrées selon intolérances et préférences.
+- Astuces simples.
+- Photo de repas comme repère visuel, sans fausse IA.
 
 ## Confidentialité
 
-Les données restent sur l’appareil. Mass+ n’utilise ni Supabase, ni compte, ni authentification distante, ni clé API. La version actuelle ne dépend d’aucune API externe.
+Mass+ ne collecte pas les données utilisateur. Les données restent sur l’appareil. Open Food Facts est appelé uniquement lorsque l’utilisateur lance explicitement une recherche produit.
 
-## Fichiers principaux
+## Limites
 
-- `index.html` : shell de l’application
-- `style.css` : design mobile-first
-- `app.js` : logique IndexedDB, journal, onboarding, recherche locale, photo, favoris
-- `data/aliments-fr.json` : base alimentaire locale de 156 entrées
-- `data/recettes-fr.json` : 52 recettes hypercaloriques
-- `data/astuces-fr.json` : 30 astuces du jour
-- `foods.fr.json`, `recipes.fr.json`, `tips.fr.json` : copies compatibles historiques
-- `manifest.json` : PWA
-- `service-worker.js` : cache offline
-- `SECURITY.md` : audit sécurité et limites
+Les objectifs nutritionnels sont indicatifs et ne remplacent pas l’avis d’un médecin ou d’un diététicien.
+
+## Prochaines améliorations prévues
+
+- Courbe de poids plus lisible.
+- Export des données.
+- Meilleure édition des favoris.
+- Plus de recettes adaptées.
+- Tests mobiles réels réguliers iPhone Safari et Android Chrome.
