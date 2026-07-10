@@ -1,6 +1,6 @@
 "use strict";
 
-const APP_VERSION = "0.2.1";
+const APP_VERSION = "0.3.0";
 const STORAGE_KEY = "mass-plus-state-v2";
 const LEGACY_KEYS = ["mass-plus-mvp-v1", "mass-plus-state"];
 const PHOTO_DB = "mass-plus-photos";
@@ -9,11 +9,11 @@ const MEALS = ["petit déjeuner", "déjeuner", "collation", "dîner", "autre"];
 const NAV = [
   ["home", "Accueil", "⌂"],
   ["journal", "Journal", "▦"],
-  ["favorites", "Favoris", "★"],
-  ["weight", "Poids", "◌"],
+  ["add", "Ajouter", "+"],
+  ["recipes", "Recettes", "□"],
   ["profile", "Profil", "◎"]
 ];
-const EXTRA_SCREENS = ["recipes", "tips", "photo"];
+const EXTRA_SCREENS = ["weight", "photo"];
 const ACTIVITY_FACTORS = { faible: 1.2, "légère": 1.375, "modérée": 1.55, "élevée": 1.725 };
 const PROTEIN_FACTORS = { faible: 1.2, "légère": 1.4, "modérée": 1.6, "élevée": 1.8 };
 const EXCLUSION_OPTIONS = ["lactose", "gluten", "œufs", "arachides", "fruits à coque", "soja", "poisson", "végétarien", "aucune"];
@@ -25,6 +25,7 @@ let recipes = [];
 let tips = [];
 let currentScreen = "home";
 let selectedMeal = "petit déjeuner";
+let recipesTab = "recipes";
 let searchResults = [];
 let state = loadState();
 
@@ -73,7 +74,8 @@ function emptyState() {
     offCache: {},
     recipeFavorites: [],
     photos: [],
-    pendingPhotoMeal: "déjeuner"
+    pendingPhotoMeal: "déjeuner",
+    migrations: {}
   };
 }
 
@@ -115,6 +117,8 @@ function migrateState(saved) {
   next.recipeFavorites = Array.isArray(saved.recipeFavorites) ? saved.recipeFavorites : [];
   next.photos = Array.isArray(saved.photos) ? saved.photos : [];
   next.pendingPhotoMeal = saved.pendingPhotoMeal || "déjeuner";
+  next.migrations = saved.migrations && typeof saved.migrations === "object" ? saved.migrations : {};
+  if (!next.migrations.savedMealsV1) next.migrations.savedMealsV1 = APP_VERSION;
   next.version = APP_VERSION;
   const latest = latestWeightFrom(next);
   if (latest) next.profile.currentWeight = latest;
@@ -324,13 +328,23 @@ async function loadData() {
 
 function renderNav() {
   $("#bottomNav").innerHTML = NAV.map(([screen, label, icon]) => `
-    <button class="${screen === currentScreen ? "active" : ""}" data-screen="${screen}">
+    <button class="${screen === "add" ? "add-nav" : ""} ${screen === currentScreen ? "active" : ""}" ${screen === "add" ? "data-open-add-sheet" : `data-screen="${screen}"`} type="button">
       <span>${icon}</span>${label}
     </button>`).join("");
   $$("[data-screen]").forEach((button) => button.addEventListener("click", () => go(button.dataset.screen)));
+  $("[data-open-add-sheet]")?.addEventListener("click", openAddSheet);
 }
 
 function go(screen) {
+  if (screen === "tips") {
+    recipesTab = "tips";
+    screen = "recipes";
+  }
+  if (screen === "favorites") screen = "journal";
+  if (screen === "add") {
+    openAddSheet();
+    return;
+  }
   currentScreen = screen;
   history.replaceState(null, "", `#${screen}`);
   render();
@@ -338,9 +352,66 @@ function go(screen) {
 
 function render() {
   renderNav();
-  const screens = { home: renderHome, journal: renderJournal, favorites: renderFavorites, weight: renderWeight, profile: renderProfile, recipes: renderRecipes, tips: renderTips, photo: renderPhoto };
+  const screens = { home: renderHome, journal: renderJournal, weight: renderWeight, profile: renderProfile, recipes: renderRecipes, photo: renderPhoto };
   (screens[currentScreen] || renderHome)();
 }
+
+function openAddSheet() {
+  closeAddSheet({ keepHistory: true });
+  const overlay = document.createElement("div");
+  overlay.id = "addSheet";
+  overlay.className = "sheet-overlay";
+  overlay.innerHTML = `
+    <div class="add-sheet" role="dialog" aria-modal="true" aria-labelledby="addSheetTitle">
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="section-head">
+        <h2 id="addSheetTitle">Ajouter</h2>
+        <button class="sheet-close" type="button" aria-label="Fermer" data-close-sheet>×</button>
+      </div>
+      <button class="sheet-choice" type="button" data-add-choice="food"><span>1</span>Ajouter un aliment</button>
+      <button class="sheet-choice" type="button" data-add-choice="photo"><span>2</span>Photographier mon repas</button>
+      <button class="sheet-choice" type="button" data-add-choice="saved"><span>3</span>Ajouter un repas enregistré</button>
+      <button class="sheet-choice" type="button" data-add-choice="scan"><span>4</span>Scanner un code-barres — bientôt disponible</button>
+      <p class="sheet-status" id="addSheetStatus" role="status"></p>
+    </div>`;
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add("visible"));
+  history.pushState({ massPlusAddSheet: true }, "", location.href);
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay || event.target.closest("[data-close-sheet]")) closeAddSheet();
+  });
+  $$("[data-add-choice]", overlay).forEach((button) => button.addEventListener("click", () => handleAddChoice(button.dataset.addChoice)));
+}
+
+function closeAddSheet(options = {}) {
+  const sheet = $("#addSheet");
+  if (!sheet) return;
+  sheet.classList.remove("visible");
+  setTimeout(() => sheet.remove(), 160);
+  if (!options.keepHistory && !options.fromHistory && history.state?.massPlusAddSheet) history.back();
+}
+
+function handleAddChoice(choice) {
+  if (choice === "scan") {
+    $("#addSheetStatus").textContent = "Fonction disponible prochainement";
+    toast("Fonction disponible prochainement");
+    return;
+  }
+  history.replaceState(null, "", location.href);
+  closeAddSheet({ keepHistory: true });
+  if (choice === "food") {
+    selectedMeal = selectedMeal || "petit déjeuner";
+    go("journal");
+    setTimeout(() => $("#journalSearch")?.focus(), 80);
+  }
+  if (choice === "photo") go("photo");
+  if (choice === "saved") {
+    go("journal");
+    setTimeout(() => $("#savedMeals")?.scrollIntoView({ block: "start", behavior: "smooth" }), 80);
+  }
+}
+
+window.addEventListener("popstate", () => closeAddSheet({ fromHistory: true }));
 
 function metric(label, value) {
   return `<div class="metric"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`;
@@ -351,14 +422,27 @@ function progress(label, value, goal) {
   return `<div class="progress-line"><div class="row"><span>${esc(label)}</span><strong>${fmt(value, label === "Protéines" ? 1 : 0)} / ${fmt(goal, label === "Protéines" ? 0 : 0)}</strong></div><div class="progress"><i style="width:${pct}%"></i></div></div>`;
 }
 
+function calorieRing(value, goal) {
+  const pct = goal ? Math.round((Number(value || 0) / goal) * 100) : 0;
+  const visual = Math.max(0, Math.min(100, pct));
+  return `<div class="calorie-ring" style="--angle:${visual * 3.6}deg" aria-label="Calories consommées à ${pct} pour cent de l’objectif">
+    <span>${fmt(pct)}%</span>
+  </div>`;
+}
+
 function renderHome() {
   const sum = totals();
   const goals = activeGoals();
   $("#screen").innerHTML = `
     <article class="card hero">
-      <p class="eyebrow">Aujourd’hui</p>
-      <div class="big-number">${fmt(sum.kcal)} kcal</div>
-      <p class="small">${fmt(sum.protein, 1)} g protéines · objectif ${goals.calories ? fmt(goals.calories) : "à calculer"} kcal</p>
+      <div class="hero-top">
+        <div>
+          <p class="eyebrow">Aujourd’hui</p>
+          <div class="big-number">${fmt(sum.kcal)} kcal</div>
+          <p class="small">${fmt(sum.protein, 1)} g protéines · objectif ${goals.calories ? fmt(goals.calories) : "à calculer"} kcal</p>
+        </div>
+        ${calorieRing(sum.kcal, goals.calories)}
+      </div>
       ${progress("Calories", sum.kcal, goals.calories)}
       ${progress("Protéines", sum.protein, goals.protein)}
     </article>
@@ -377,13 +461,12 @@ function renderHome() {
       <div class="section-head"><h2>Collations rapides</h2><span class="small">Ajout individuel</span></div>
       <div class="quick-grid">${QUICK_SNACK_IDS.map(quickSnackCard).join("")}</div>
     </article>
-    <article class="card">
-      <div class="section-head"><h2>Recettes hypercaloriques</h2><button class="ghost-inline" data-go="recipes">Voir tout</button></div>
-      <div class="stack">${filteredRecipes().slice(0, 2).map(recipeCard).join("")}</div>
-    </article>
-    <article class="card">
-      <div class="section-head"><h2>Astuces simples</h2><button class="ghost-inline" data-go="tips">Voir tout</button></div>
-      <div class="stack">${tips.slice(0, 2).map(tipCard).join("")}</div>
+    <article class="card discover-card">
+      <div>
+        <h2>Découvrir les recettes et astuces</h2>
+        <p class="small">Recettes hypercaloriques et conseils simples restent accessibles dans leur onglet.</p>
+      </div>
+      <button class="ghost-inline" data-go="recipes">Ouvrir</button>
     </article>`;
   $("#goAdd").addEventListener("click", () => { selectedMeal = "petit déjeuner"; go("journal"); });
   $("#quickSnack").addEventListener("click", () => { selectedMeal = "collation"; go("journal"); });
@@ -427,6 +510,7 @@ function renderJournal() {
       ${foodSearchMarkup("journal")}
       <details class="manual-food"><summary>Créer un aliment manuellement</summary>${manualFoodMarkup()}</details>
     </article>
+    ${savedMealsSection()}
     <article class="card">
       <h2>Repas du jour</h2>
       <div class="stack">${MEALS.map(mealBlock).join("")}</div>
@@ -434,7 +518,30 @@ function renderJournal() {
   bindMealTabs();
   bindFoodSearch("journal", (food, grams) => addEntry(food, grams, selectedMeal));
   bindManualFoodForm();
+  bindSavedMeals();
   bindEntryButtons();
+}
+
+function savedMealsSection() {
+  return `<article class="card saved-meals-card" id="savedMeals">
+    <div class="section-head">
+      <div>
+        <h2>Repas enregistrés</h2>
+        <p class="small">Les anciens favoris sont conservés ici.</p>
+      </div>
+    </div>
+    <form id="savedMealForm" class="form-grid saved-meal-form">
+      <label>Nom du repas<input name="name" placeholder="Petit déjeuner habituel"></label>
+      <label>Repas<select name="meal">${MEALS.map((meal) => `<option ${meal === selectedMeal ? "selected" : ""}>${esc(meal)}</option>`).join("")}</select></label>
+      <button class="secondary-button">Créer depuis le journal</button>
+    </form>
+    <div class="stack saved-meals-list">${state.favorites.length ? state.favorites.map(favoriteEditor).join("") : `<p class="small">Aucun repas enregistré pour le moment.</p>`}</div>
+  </article>`;
+}
+
+function bindSavedMeals() {
+  $("#savedMealForm")?.addEventListener("submit", saveFavoriteFromMeal);
+  bindFavoriteEditors();
 }
 
 function bindMealTabs() {
@@ -637,10 +744,10 @@ function favoriteEditor(favorite) {
       <label>Repas<select data-fav-meal="${favorite.id}">${MEALS.map((meal) => `<option ${meal === favorite.meal ? "selected" : ""}>${esc(meal)}</option>`).join("")}</select></label>
     </div>
     <div class="macro">${fmt(sum.kcal)} kcal · ${fmt(sum.protein, 1)} g protéines</div>
-    <div class="stack">${favorite.items.map((item, index) => favoriteItemRow(favorite, item, index)).join("") || `<p class="small">Ajoute un aliment à ce favori.</p>`}</div>
-    <div class="favorite-add">${foodSearchMarkup(`fav-${favorite.id}`, "ajouter un aliment au favori")}</div>
+    <div class="stack">${favorite.items.map((item, index) => favoriteItemRow(favorite, item, index)).join("") || `<p class="small">Ajoute un aliment à ce repas enregistré.</p>`}</div>
+    <div class="favorite-add">${foodSearchMarkup(`fav-${favorite.id}`, "ajouter un aliment au repas enregistré")}</div>
     <div class="inline-actions">
-      <button class="primary-button compact" data-add-favorite="${favorite.id}">Ajouter au journal</button>
+      <button class="primary-button compact" data-add-favorite="${favorite.id}">Ajouter ce repas</button>
       <button class="secondary-button compact" data-save-favorite="${favorite.id}">Enregistrer</button>
       <button class="danger-button compact" data-delete-favorite="${favorite.id}">Supprimer</button>
     </div>
@@ -664,9 +771,11 @@ function bindFavoriteEditors() {
   $$("[data-add-favorite]").forEach((button) => button.addEventListener("click", () => addFavoriteToJournal(button.dataset.addFavorite)));
   $$("[data-save-favorite]").forEach((button) => button.addEventListener("click", () => saveFavoriteMeta(button.dataset.saveFavorite)));
   $$("[data-delete-favorite]").forEach((button) => button.addEventListener("click", () => {
+    const favorite = state.favorites.find((item) => item.id === button.dataset.deleteFavorite);
+    if (!confirm(`Supprimer le repas enregistré "${favorite?.name || "sans nom"}" ?`)) return;
     state.favorites = state.favorites.filter((favorite) => favorite.id !== button.dataset.deleteFavorite);
     saveState();
-    renderFavorites();
+    renderAfterSavedMealChange();
   }));
   $$("[data-fav-update]").forEach((button) => button.addEventListener("click", () => updateFavoriteItem(button.dataset.favUpdate, Number(button.dataset.index))));
   $$("[data-fav-remove]").forEach((button) => button.addEventListener("click", () => removeFavoriteItem(button.dataset.favRemove, Number(button.dataset.index))));
@@ -679,8 +788,8 @@ function saveFavoriteMeta(favoriteId) {
   favorite.name = $(`[data-fav-name="${favoriteId}"]`).value.trim() || favorite.name;
   favorite.meal = $(`[data-fav-meal="${favoriteId}"]`).value;
   saveState();
-  toast("Favori enregistré.");
-  renderFavorites();
+  toast("Repas enregistré mis à jour.");
+  renderAfterSavedMealChange();
 }
 
 function addFoodToFavorite(favoriteId, food, grams) {
@@ -688,7 +797,7 @@ function addFoodToFavorite(favoriteId, food, grams) {
   if (!favorite) return;
   favorite.items.push({ food: food.id, name: food.name, grams, ...calc(food, grams) });
   saveState();
-  renderFavorites();
+  renderAfterSavedMealChange();
 }
 
 function updateFavoriteItem(favoriteId, index) {
@@ -699,7 +808,7 @@ function updateFavoriteItem(favoriteId, index) {
   if (!favorite || !item || !food || !grams) return;
   favorite.items[index] = { ...item, grams, ...calc(food, grams) };
   saveState();
-  renderFavorites();
+  renderAfterSavedMealChange();
 }
 
 function removeFavoriteItem(favoriteId, index) {
@@ -707,18 +816,22 @@ function removeFavoriteItem(favoriteId, index) {
   if (!favorite) return;
   favorite.items.splice(index, 1);
   saveState();
-  renderFavorites();
+  renderAfterSavedMealChange();
 }
 
 function addFavoriteToJournal(favoriteId) {
   const favorite = state.favorites.find((item) => item.id === favoriteId);
   if (!favorite) return;
+  if (!favorite.items.length) {
+    toast("Ce repas enregistré est vide.");
+    return;
+  }
   favorite.items.forEach((item) => {
     const food = findFood(item.food);
     if (food) addEntry(food, item.grams, favorite.meal, false);
   });
   saveState();
-  toast("Favori ajouté au journal.");
+  toast("Repas enregistré ajouté au journal.");
   selectedMeal = favorite.meal;
   go("journal");
 }
@@ -735,8 +848,8 @@ function saveFavoriteFromMeal(event) {
       items: []
     });
     saveState();
-    toast("Favori créé. Ajoute des aliments dedans.");
-    renderFavorites();
+    toast("Repas enregistré créé. Ajoute des aliments dedans.");
+    renderAfterSavedMealChange();
     return;
   }
   state.favorites.unshift({
@@ -746,8 +859,13 @@ function saveFavoriteFromMeal(event) {
     items: mealItems.map((entry) => ({ food: entry.foodId, name: entry.name, grams: entry.grams, kcal: entry.kcal, protein: entry.protein, carbs: entry.carbs, fat: entry.fat }))
   });
   saveState();
-  toast("Favori sauvegardé.");
-  renderFavorites();
+  toast("Repas enregistré sauvegardé.");
+  renderAfterSavedMealChange();
+}
+
+function renderAfterSavedMealChange() {
+  if (currentScreen === "journal") renderJournal();
+  else render();
 }
 
 function renderWeight() {
@@ -809,6 +927,7 @@ function renderProfile() {
       <div class="grid two">${metric("IMC actuel", goals.bmi ? fmt(goals.bmi, 1) : "à calculer")}${metric("IMC cible", goals.targetBmi ? fmt(goals.targetBmi, 1) : "à calculer")}</div>
       <p class="small">Métabolisme de base Mifflin-St Jeor, ajusté selon l’activité et un surplus progressif si l’objectif est une prise de poids.</p>
       <p class="small">Estimation indicative calculée à partir du profil. Elle ne remplace pas l’avis d’un médecin ou d’un diététicien.</p>
+      <button class="secondary-button wide" id="profileWeight" type="button">Suivi du poids</button>
     </article>
     <article class="card">
       <h2>Intolérances, allergies et préférences</h2>
@@ -820,6 +939,7 @@ function renderProfile() {
   bindGoalMode();
   bindProfileForm();
   bindExclusionForm();
+  $("#profileWeight").addEventListener("click", () => go("weight"));
 }
 
 function goalFieldsMarkup(goals) {
@@ -904,8 +1024,21 @@ function filteredRecipes() {
 
 function renderRecipes() {
   const list = filteredRecipes();
-  $("#screen").innerHTML = `<article class="card"><div class="section-head"><h2>Recettes hypercaloriques</h2><button class="ghost-inline" data-go="home">Accueil</button></div><p class="small">${list.length} recette(s) compatibles avec le profil.</p><div class="stack">${list.map(recipeCard).join("")}</div></article>`;
+  $("#screen").innerHTML = `<article class="card">
+    <div class="section-head"><h2>Recettes</h2><button class="ghost-inline" data-go="home">Accueil</button></div>
+    <div class="tabs sub-tabs">
+      <button class="${recipesTab === "recipes" ? "active" : ""}" data-recipes-tab="recipes">Recettes</button>
+      <button class="${recipesTab === "tips" ? "active" : ""}" data-recipes-tab="tips">Astuces</button>
+    </div>
+    ${recipesTab === "recipes"
+      ? `<p class="small">${list.length} recette(s) compatibles avec le profil.</p><div class="stack">${list.map(recipeCard).join("")}</div>`
+      : `<p class="small">Astuces déjà présentes dans Mass+.</p><div class="stack">${tips.map(tipCard).join("")}</div>`}
+  </article>`;
   $$("[data-go]").forEach((button) => button.addEventListener("click", () => go(button.dataset.go)));
+  $$("[data-recipes-tab]").forEach((button) => button.addEventListener("click", () => {
+    recipesTab = button.dataset.recipesTab;
+    renderRecipes();
+  }));
   bindRecipeButtons();
 }
 
@@ -913,7 +1046,7 @@ function recipeCard(recipe) {
   return `<div class="recipe-card">
     <div><strong>${esc(recipe.name)}</strong><div class="macro">${esc(recipe.duration)} · ${esc(recipe.difficulty)} · ${esc(recipe.cost)} · ${fmt(recipe.kcal)} kcal · ${fmt(recipe.protein)} g prot.</div></div>
     <details><summary>Voir les ingrédients</summary><ul>${recipe.ingredients.map((item) => `<li>${esc(item)}</li>`).join("")}</ul><ol>${recipe.steps.map((step) => `<li>${esc(step)}</li>`).join("")}</ol></details>
-    <div class="inline-actions"><button class="primary-button compact" data-recipe-journal="${recipe.id}">Ajouter au journal</button><button class="secondary-button compact" data-recipe-fav="${recipe.id}">Ajouter aux favoris</button></div>
+    <div class="inline-actions"><button class="primary-button compact" data-recipe-journal="${recipe.id}">Ajouter au journal</button><button class="secondary-button compact" data-recipe-fav="${recipe.id}">Enregistrer comme repas</button></div>
   </div>`;
 }
 
@@ -948,7 +1081,7 @@ function addRecipeToFavorites(recipeId) {
     })
   });
   saveState();
-  toast("Recette ajoutée aux favoris.");
+  toast("Recette enregistrée comme repas.");
 }
 
 function renderTips() {
@@ -1089,7 +1222,14 @@ async function renderPhotoList() {
 async function init() {
   await loadData();
   const hashScreen = location.hash.replace("#", "");
-  if ([...NAV.map(([screen]) => screen), ...EXTRA_SCREENS].includes(hashScreen)) currentScreen = hashScreen;
+  if (hashScreen === "tips") {
+    recipesTab = "tips";
+    currentScreen = "recipes";
+  } else if (hashScreen === "favorites") {
+    currentScreen = "journal";
+  } else if ([...NAV.map(([screen]) => screen).filter((screen) => screen !== "add"), ...EXTRA_SCREENS].includes(hashScreen)) {
+    currentScreen = hashScreen;
+  }
   render();
   $("#installHelp").addEventListener("click", () => toast("iPhone Safari : Partager puis Ajouter à l’écran d’accueil. Android Chrome : Installer l’application."));
   if ("serviceWorker" in navigator) {
@@ -1097,7 +1237,18 @@ async function init() {
   }
   window.addEventListener("hashchange", () => {
     const next = location.hash.replace("#", "");
-    if ([...NAV.map(([screen]) => screen), ...EXTRA_SCREENS].includes(next)) {
+    if (next === "tips") {
+      recipesTab = "tips";
+      currentScreen = "recipes";
+      render();
+      return;
+    }
+    if (next === "favorites") {
+      currentScreen = "journal";
+      render();
+      return;
+    }
+    if ([...NAV.map(([screen]) => screen).filter((screen) => screen !== "add"), ...EXTRA_SCREENS].includes(next)) {
       currentScreen = next;
       render();
     }
