@@ -1,4 +1,4 @@
-const CACHE_NAME = "mass-plus-v0-4-2";
+const CACHE_NAME = "mass-plus-v0-4-3";
 const ASSETS = [
   "./",
   "./index.html",
