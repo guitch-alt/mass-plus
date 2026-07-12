@@ -1,14 +1,1458 @@
 [
-  {"id":"porridge-banane-cacahuete","name":"Porridge banane et beurre de cacahuète","meal":"petit déjeuner","duration":"8 min","difficulty":"facile","cost":"économique","kcal":610,"protein":24,"tags":["prise de masse","végétarien"],"exclusions":["arachides"],"ingredients":["60 g flocons d’avoine","250 ml lait entier","1 banane","20 g beurre de cacahuète"],"items":[{"food":"flocons-avoine","grams":60},{"food":"lait-entier","grams":250},{"food":"banane","grams":120},{"food":"beurre-cacahuete","grams":20}],"steps":["Chauffer le lait avec les flocons.","Ajouter la banane en rondelles.","Terminer avec le beurre de cacahuète."]},
-  {"id":"bowl-skyr-avoine-fruits","name":"Bowl skyr, avoine et fruits","meal":"collation","duration":"5 min","difficulty":"facile","cost":"moyen","kcal":430,"protein":28,"tags":["prise de masse","rapide","végétarien"],"exclusions":["lactose"],"ingredients":["200 g skyr","50 g flocons d’avoine","1 banane","10 g amandes"],"items":[{"food":"skyr","grams":200},{"food":"flocons-avoine","grams":50},{"food":"banane","grams":120},{"food":"amandes","grams":10}],"steps":["Verser le skyr dans un bol.","Ajouter avoine, banane et amandes.","Manger frais."]},
-  {"id":"semoule-lait-enrichie","name":"Semoule au lait enrichie","meal":"collation","duration":"12 min","difficulty":"facile","cost":"économique","kcal":520,"protein":18,"tags":["prise de masse","doux"],"exclusions":["lactose","gluten"],"ingredients":["250 ml lait entier","70 g semoule","15 g beurre demi-sel","1 compote"],"items":[{"food":"lait-entier","grams":250},{"food":"semoule","grams":70},{"food":"beurre-demi-sel","grams":15},{"food":"compote","grams":100}],"steps":["Cuire la semoule dans le lait.","Ajouter le beurre hors feu.","Servir avec une compote."]},
-  {"id":"smoothie-banane-lait-oleagineux","name":"Smoothie banane, lait et oléagineux","meal":"collation","duration":"4 min","difficulty":"facile","cost":"moyen","kcal":500,"protein":18,"tags":["liquide","quand je n’ai pas faim"],"exclusions":["lactose","arachides"],"ingredients":["300 ml lait entier","1 banane","25 g beurre de cacahuète"],"items":[{"food":"lait-entier","grams":300},{"food":"banane","grams":120},{"food":"beurre-cacahuete","grams":25}],"steps":["Mixer tous les ingrédients.","Boire entre les repas plutôt qu’avant."]},
-  {"id":"pates-poulet-pesto","name":"Pâtes au poulet et pesto","meal":"déjeuner","duration":"18 min","difficulty":"facile","cost":"moyen","kcal":760,"protein":50,"tags":["repas rapide","prise de masse"],"exclusions":["gluten"],"ingredients":["250 g pâtes cuites","150 g poulet","10 g huile d’olive","30 g fromage"],"items":[{"food":"pates","grams":250},{"food":"poulet","grams":150},{"food":"huile-olive","grams":10},{"food":"fromage","grams":30}],"steps":["Cuire ou réchauffer les pâtes.","Ajouter poulet et huile d’olive.","Terminer avec le fromage."]},
-  {"id":"riz-oeufs-avocat","name":"Riz, œufs et avocat","meal":"déjeuner","duration":"15 min","difficulty":"facile","cost":"moyen","kcal":690,"protein":25,"tags":["sans gluten","végétarien"],"exclusions":["œufs"],"ingredients":["250 g riz cuit","2 œufs","1 avocat","10 g huile d’olive"],"items":[{"food":"riz","grams":250},{"food":"oeufs","grams":120},{"food":"avocat","grams":120},{"food":"huile-olive","grams":10}],"steps":["Réchauffer le riz.","Ajouter les œufs cuits.","Servir avec avocat et huile d’olive."]},
-  {"id":"lentilles-feta-huile","name":"Lentilles, fromage et huile d’olive","meal":"déjeuner","duration":"10 min","difficulty":"facile","cost":"économique","kcal":520,"protein":28,"tags":["sans gluten","végétarien"],"exclusions":["lactose"],"ingredients":["220 g lentilles","40 g fromage","15 g huile d’olive","pain si besoin"],"items":[{"food":"lentilles","grams":220},{"food":"fromage","grams":40},{"food":"huile-olive","grams":15}],"steps":["Mélanger les lentilles tièdes.","Ajouter fromage et huile.","Assaisonner simplement."]},
-  {"id":"tartines-avocat-oeufs","name":"Tartines avocat et œufs","meal":"petit déjeuner","duration":"10 min","difficulty":"facile","cost":"moyen","kcal":650,"protein":27,"tags":["rapide","végétarien"],"exclusions":["gluten","œufs"],"ingredients":["100 g pain","2 œufs","1 avocat","10 g beurre demi-sel"],"items":[{"food":"pain","grams":100},{"food":"oeufs","grams":120},{"food":"avocat","grams":100},{"food":"beurre-demi-sel","grams":10}],"steps":["Toaster le pain.","Ajouter beurre, avocat et œufs.","Saler légèrement."]},
-  {"id":"pommes-terre-thon-fromage","name":"Pommes de terre, thon et fromage frais","meal":"dîner","duration":"20 min","difficulty":"facile","cost":"économique","kcal":560,"protein":40,"tags":["sans gluten","repas simple"],"exclusions":["poisson","lactose"],"ingredients":["300 g pommes de terre","120 g thon","30 g fromage","10 g huile d’olive"],"items":[{"food":"pommes-terre","grams":300},{"food":"thon","grams":120},{"food":"fromage","grams":30},{"food":"huile-olive","grams":10}],"steps":["Cuire les pommes de terre.","Ajouter thon, fromage et huile.","Servir tiède ou froid."]},
-  {"id":"chili-doux-boeuf-haricots","name":"Chili doux bœuf et haricots rouges","meal":"dîner","duration":"25 min","difficulty":"moyen","cost":"moyen","kcal":720,"protein":45,"tags":["sans gluten","famille"],"exclusions":[],"ingredients":["125 g steak haché 5%","220 g haricots rouges","250 g riz","10 g huile d’olive"],"items":[{"food":"steak-hache-5","grams":125},{"food":"haricots-rouges","grams":220},{"food":"riz","grams":250},{"food":"huile-olive","grams":10}],"steps":["Cuire le bœuf doucement.","Ajouter haricots rouges et assaisonnement.","Servir avec le riz."]},
-  {"id":"wrap-poulet-fromage","name":"Wrap pain, poulet et fromage","meal":"déjeuner","duration":"10 min","difficulty":"facile","cost":"moyen","kcal":620,"protein":48,"tags":["repas froid","rapide"],"exclusions":["gluten","lactose"],"ingredients":["100 g pain","150 g poulet","30 g fromage","1 compote en dessert"],"items":[{"food":"pain","grams":100},{"food":"poulet","grams":150},{"food":"fromage","grams":30},{"food":"compote","grams":100}],"steps":["Garnir le pain avec poulet et fromage.","Ajouter un filet d’huile si besoin.","Compléter avec la compote."]},
-  {"id":"pois-chiches-avocat-riz","name":"Pois chiches, avocat et riz","meal":"dîner","duration":"12 min","difficulty":"facile","cost":"économique","kcal":680,"protein":22,"tags":["sans lactose","sans gluten","végétarien"],"exclusions":[],"ingredients":["220 g pois chiches","200 g riz","1 avocat","10 g huile d’olive"],"items":[{"food":"pois-chiches","grams":220},{"food":"riz","grams":200},{"food":"avocat","grams":120},{"food":"huile-olive","grams":10}],"steps":["Mélanger riz et pois chiches.","Ajouter l’avocat.","Finir avec huile et assaisonnement."]}
+  {
+    "id": "porridge-banane-cacahuete",
+    "name": "Porridge banane cacahuète",
+    "type": "petit-déjeuner",
+    "category": "petit-déjeuner",
+    "budget": "€",
+    "kcal": 420,
+    "protein": 18,
+    "carbs": 45,
+    "fat": 12,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "petit-déjeuner",
+      "prise de masse",
+      "pas cher"
+    ]
+  },
+  {
+    "id": "smoothie-lait-avoine",
+    "name": "Smoothie lait avoine",
+    "type": "repas froid",
+    "category": "repas froid",
+    "budget": "€€",
+    "kcal": 475,
+    "protein": 30,
+    "carbs": 53,
+    "fat": 17,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas froid",
+      "prise de masse",
+      "rapide"
+    ]
+  },
+  {
+    "id": "tartines-avocat-oeufs",
+    "name": "Tartines avocat œufs",
+    "type": "repas rapide",
+    "category": "repas rapide",
+    "budget": "€€€",
+    "kcal": 530,
+    "protein": 34,
+    "carbs": 61,
+    "fat": 22,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas rapide",
+      "prise de masse",
+      "pas cher"
+    ]
+  },
+  {
+    "id": "skyr-avoine-miel",
+    "name": "Skyr avoine miel",
+    "type": "repas famille",
+    "category": "repas famille",
+    "budget": "€",
+    "kcal": 755,
+    "protein": 38,
+    "carbs": 69,
+    "fat": 27,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas famille",
+      "prise de masse",
+      "rapide"
+    ]
+  },
+  {
+    "id": "pain-beurre-confiture",
+    "name": "Pain beurre confiture",
+    "type": "collation",
+    "category": "collation",
+    "budget": "€€",
+    "kcal": 640,
+    "protein": 34,
+    "carbs": 77,
+    "fat": 32,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "collation",
+      "prise de masse",
+      "pas cher"
+    ]
+  },
+  {
+    "id": "omelette-emmental-pain",
+    "name": "Omelette emmental pain",
+    "type": "petit-déjeuner",
+    "category": "petit-déjeuner",
+    "budget": "€€€",
+    "kcal": 695,
+    "protein": 38,
+    "carbs": 85,
+    "fat": 37,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "petit-déjeuner",
+      "prise de masse",
+      "rapide"
+    ]
+  },
+  {
+    "id": "riz-thon-avocat",
+    "name": "Riz thon avocat",
+    "type": "repas froid",
+    "category": "repas froid",
+    "budget": "€",
+    "kcal": 750,
+    "protein": 50,
+    "carbs": 93,
+    "fat": 12,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas froid",
+      "prise de masse",
+      "pas cher"
+    ]
+  },
+  {
+    "id": "pates-bolognaise-rapide",
+    "name": "Pâtes bolognaise rapide",
+    "type": "repas rapide",
+    "category": "repas rapide",
+    "budget": "€€",
+    "kcal": 805,
+    "protein": 26,
+    "carbs": 101,
+    "fat": 17,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas rapide",
+      "prise de masse",
+      "rapide"
+    ]
+  },
+  {
+    "id": "semoule-thon-huile",
+    "name": "Semoule thon huile",
+    "type": "repas famille",
+    "category": "repas famille",
+    "budget": "€€€",
+    "kcal": 1030,
+    "protein": 30,
+    "carbs": 45,
+    "fat": 22,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas famille",
+      "prise de masse",
+      "pas cher"
+    ]
+  },
+  {
+    "id": "wrap-poulet-avocat",
+    "name": "Wrap poulet avocat",
+    "type": "collation",
+    "category": "collation",
+    "budget": "€",
+    "kcal": 420,
+    "protein": 26,
+    "carbs": 53,
+    "fat": 27,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "collation",
+      "prise de masse",
+      "rapide"
+    ]
+  },
+  {
+    "id": "salade-pates-thon",
+    "name": "Salade pâtes thon",
+    "type": "petit-déjeuner",
+    "category": "petit-déjeuner",
+    "budget": "€€",
+    "kcal": 475,
+    "protein": 30,
+    "carbs": 61,
+    "fat": 32,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "petit-déjeuner",
+      "prise de masse",
+      "pas cher"
+    ]
+  },
+  {
+    "id": "bowl-lentilles-oeufs",
+    "name": "Bowl lentilles œufs",
+    "type": "repas froid",
+    "category": "repas froid",
+    "budget": "€€€",
+    "kcal": 530,
+    "protein": 42,
+    "carbs": 69,
+    "fat": 37,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas froid",
+      "prise de masse",
+      "rapide"
+    ]
+  },
+  {
+    "id": "poulet-curry-riz",
+    "name": "Poulet curry riz",
+    "type": "repas rapide",
+    "category": "repas rapide",
+    "budget": "€",
+    "kcal": 585,
+    "protein": 46,
+    "carbs": 77,
+    "fat": 12,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas rapide",
+      "prise de masse",
+      "pas cher"
+    ]
+  },
+  {
+    "id": "chili-con-carne",
+    "name": "Chili con carne",
+    "type": "repas famille",
+    "category": "repas famille",
+    "budget": "€€",
+    "kcal": 810,
+    "protein": 50,
+    "carbs": 85,
+    "fat": 17,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas famille",
+      "prise de masse",
+      "rapide"
+    ]
+  },
+  {
+    "id": "dahl-lentilles-riz",
+    "name": "Dahl lentilles riz",
+    "type": "collation",
+    "category": "collation",
+    "budget": "€€€",
+    "kcal": 695,
+    "protein": 18,
+    "carbs": 93,
+    "fat": 22,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "collation",
+      "prise de masse",
+      "pas cher"
+    ]
+  },
+  {
+    "id": "sandwich-jambon-beurre",
+    "name": "Sandwich jambon beurre",
+    "type": "petit-déjeuner",
+    "category": "petit-déjeuner",
+    "budget": "€",
+    "kcal": 750,
+    "protein": 22,
+    "carbs": 101,
+    "fat": 27,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "petit-déjeuner",
+      "prise de masse",
+      "rapide"
+    ]
+  },
+  {
+    "id": "croque-monsieur",
+    "name": "Croque-monsieur",
+    "type": "repas froid",
+    "category": "repas froid",
+    "budget": "€€",
+    "kcal": 805,
+    "protein": 34,
+    "carbs": 45,
+    "fat": 32,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas froid",
+      "prise de masse",
+      "pas cher"
+    ]
+  },
+  {
+    "id": "riz-saumon-avocat",
+    "name": "Riz saumon avocat",
+    "type": "repas rapide",
+    "category": "repas rapide",
+    "budget": "€€€",
+    "kcal": 860,
+    "protein": 38,
+    "carbs": 53,
+    "fat": 37,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas rapide",
+      "prise de masse",
+      "rapide"
+    ]
+  },
+  {
+    "id": "pates-pesto-poulet",
+    "name": "Pâtes pesto poulet",
+    "type": "repas famille",
+    "category": "repas famille",
+    "budget": "€",
+    "kcal": 590,
+    "protein": 42,
+    "carbs": 61,
+    "fat": 12,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas famille",
+      "prise de masse",
+      "pas cher"
+    ]
+  },
+  {
+    "id": "couscous-poulet-pois-chiches",
+    "name": "Couscous poulet pois chiches",
+    "type": "collation",
+    "category": "collation",
+    "budget": "€€",
+    "kcal": 475,
+    "protein": 38,
+    "carbs": 69,
+    "fat": 17,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "collation",
+      "prise de masse",
+      "rapide"
+    ]
+  },
+  {
+    "id": "hachis-parmentier",
+    "name": "Hachis parmentier",
+    "type": "petit-déjeuner",
+    "category": "petit-déjeuner",
+    "budget": "€€€",
+    "kcal": 530,
+    "protein": 42,
+    "carbs": 77,
+    "fat": 22,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "petit-déjeuner",
+      "prise de masse",
+      "pas cher"
+    ]
+  },
+  {
+    "id": "lasagnes-simples",
+    "name": "Lasagnes simples",
+    "type": "repas froid",
+    "category": "repas froid",
+    "budget": "€",
+    "kcal": 585,
+    "protein": 26,
+    "carbs": 85,
+    "fat": 27,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas froid",
+      "prise de masse",
+      "rapide"
+    ]
+  },
+  {
+    "id": "quiche-salade",
+    "name": "Quiche salade",
+    "type": "repas rapide",
+    "category": "repas rapide",
+    "budget": "€€",
+    "kcal": 640,
+    "protein": 30,
+    "carbs": 93,
+    "fat": 32,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas rapide",
+      "prise de masse",
+      "pas cher"
+    ]
+  },
+  {
+    "id": "tartiflette-express",
+    "name": "Tartiflette express",
+    "type": "repas famille",
+    "category": "repas famille",
+    "budget": "€€€",
+    "kcal": 865,
+    "protein": 34,
+    "carbs": 101,
+    "fat": 37,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas famille",
+      "prise de masse",
+      "rapide"
+    ]
+  },
+  {
+    "id": "gratin-pommes-de-terre-thon",
+    "name": "Gratin pommes de terre thon",
+    "type": "collation",
+    "category": "collation",
+    "budget": "€",
+    "kcal": 750,
+    "protein": 30,
+    "carbs": 45,
+    "fat": 12,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "collation",
+      "prise de masse",
+      "pas cher"
+    ]
+  },
+  {
+    "id": "pain-cacahuete-banane",
+    "name": "Pain cacahuète banane",
+    "type": "petit-déjeuner",
+    "category": "petit-déjeuner",
+    "budget": "€€",
+    "kcal": 805,
+    "protein": 34,
+    "carbs": 53,
+    "fat": 17,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "petit-déjeuner",
+      "prise de masse",
+      "rapide"
+    ]
+  },
+  {
+    "id": "fromage-blanc-muesli",
+    "name": "Fromage blanc muesli",
+    "type": "repas froid",
+    "category": "repas froid",
+    "budget": "€€€",
+    "kcal": 860,
+    "protein": 46,
+    "carbs": 61,
+    "fat": 22,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas froid",
+      "prise de masse",
+      "pas cher"
+    ]
+  },
+  {
+    "id": "lait-fruits-secs",
+    "name": "Lait fruits secs",
+    "type": "repas rapide",
+    "category": "repas rapide",
+    "budget": "€",
+    "kcal": 420,
+    "protein": 50,
+    "carbs": 69,
+    "fat": 27,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas rapide",
+      "prise de masse",
+      "rapide"
+    ]
+  },
+  {
+    "id": "riz-au-lait-enrichi",
+    "name": "Riz au lait enrichi",
+    "type": "repas famille",
+    "category": "repas famille",
+    "budget": "€€",
+    "kcal": 645,
+    "protein": 26,
+    "carbs": 77,
+    "fat": 32,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas famille",
+      "prise de masse",
+      "pas cher"
+    ]
+  },
+  {
+    "id": "crepes-beurre-miel",
+    "name": "Crêpes beurre miel",
+    "type": "collation",
+    "category": "collation",
+    "budget": "€€€",
+    "kcal": 530,
+    "protein": 22,
+    "carbs": 85,
+    "fat": 37,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "collation",
+      "prise de masse",
+      "rapide"
+    ]
+  },
+  {
+    "id": "burrito-riz-haricots",
+    "name": "Burrito riz haricots",
+    "type": "petit-déjeuner",
+    "category": "petit-déjeuner",
+    "budget": "€",
+    "kcal": 585,
+    "protein": 26,
+    "carbs": 93,
+    "fat": 12,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "petit-déjeuner",
+      "prise de masse",
+      "pas cher"
+    ]
+  },
+  {
+    "id": "pois-chiches-avocat-thon",
+    "name": "Pois chiches avocat thon",
+    "type": "repas froid",
+    "category": "repas froid",
+    "budget": "€€",
+    "kcal": 640,
+    "protein": 38,
+    "carbs": 101,
+    "fat": 17,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas froid",
+      "prise de masse",
+      "rapide"
+    ]
+  },
+  {
+    "id": "sardines-pain-beurre",
+    "name": "Sardines pain beurre",
+    "type": "repas rapide",
+    "category": "repas rapide",
+    "budget": "€€€",
+    "kcal": 695,
+    "protein": 42,
+    "carbs": 45,
+    "fat": 22,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas rapide",
+      "prise de masse",
+      "pas cher"
+    ]
+  },
+  {
+    "id": "pates-creme-jambon",
+    "name": "Pâtes crème jambon",
+    "type": "repas famille",
+    "category": "repas famille",
+    "budget": "€",
+    "kcal": 920,
+    "protein": 46,
+    "carbs": 53,
+    "fat": 27,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas famille",
+      "prise de masse",
+      "rapide"
+    ]
+  },
+  {
+    "id": "riz-poulet-huile-olive",
+    "name": "Riz poulet huile olive",
+    "type": "collation",
+    "category": "collation",
+    "budget": "€€",
+    "kcal": 805,
+    "protein": 42,
+    "carbs": 61,
+    "fat": 32,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "collation",
+      "prise de masse",
+      "pas cher"
+    ]
+  },
+  {
+    "id": "semoule-pois-chiches",
+    "name": "Semoule pois chiches",
+    "type": "petit-déjeuner",
+    "category": "petit-déjeuner",
+    "budget": "€€€",
+    "kcal": 860,
+    "protein": 18,
+    "carbs": 69,
+    "fat": 37,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "petit-déjeuner",
+      "prise de masse",
+      "rapide"
+    ]
+  },
+  {
+    "id": "salade-riz-oeufs-thon",
+    "name": "Salade riz œufs thon",
+    "type": "repas froid",
+    "category": "repas froid",
+    "budget": "€",
+    "kcal": 420,
+    "protein": 30,
+    "carbs": 77,
+    "fat": 12,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas froid",
+      "prise de masse",
+      "pas cher"
+    ]
+  },
+  {
+    "id": "pommes-de-terre-boeuf",
+    "name": "Pommes de terre bœuf",
+    "type": "repas rapide",
+    "category": "repas rapide",
+    "budget": "€€",
+    "kcal": 475,
+    "protein": 34,
+    "carbs": 85,
+    "fat": 17,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas rapide",
+      "prise de masse",
+      "rapide"
+    ]
+  },
+  {
+    "id": "omelette-pommes-de-terre",
+    "name": "Omelette pommes de terre",
+    "type": "repas famille",
+    "category": "repas famille",
+    "budget": "€€€",
+    "kcal": 700,
+    "protein": 38,
+    "carbs": 93,
+    "fat": 22,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas famille",
+      "prise de masse",
+      "pas cher"
+    ]
+  },
+  {
+    "id": "pizza-maison-jambon",
+    "name": "Pizza maison jambon",
+    "type": "collation",
+    "category": "collation",
+    "budget": "€",
+    "kcal": 585,
+    "protein": 34,
+    "carbs": 101,
+    "fat": 27,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "collation",
+      "prise de masse",
+      "rapide"
+    ]
+  },
+  {
+    "id": "taboule-pois-chiches",
+    "name": "Taboulé pois chiches",
+    "type": "petit-déjeuner",
+    "category": "petit-déjeuner",
+    "budget": "€€",
+    "kcal": 640,
+    "protein": 38,
+    "carbs": 45,
+    "fat": 32,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "petit-déjeuner",
+      "prise de masse",
+      "pas cher"
+    ]
+  },
+  {
+    "id": "pain-levain-comte-noix",
+    "name": "Pain levain comté noix",
+    "type": "repas froid",
+    "category": "repas froid",
+    "budget": "€€€",
+    "kcal": 695,
+    "protein": 50,
+    "carbs": 53,
+    "fat": 37,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas froid",
+      "prise de masse",
+      "rapide"
+    ]
+  },
+  {
+    "id": "yaourt-grec-muesli",
+    "name": "Yaourt grec muesli",
+    "type": "repas rapide",
+    "category": "repas rapide",
+    "budget": "€",
+    "kcal": 750,
+    "protein": 26,
+    "carbs": 61,
+    "fat": 12,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas rapide",
+      "prise de masse",
+      "pas cher"
+    ]
+  },
+  {
+    "id": "shake-banane-cacao",
+    "name": "Shake banane cacao",
+    "type": "repas famille",
+    "category": "repas famille",
+    "budget": "€€",
+    "kcal": 975,
+    "protein": 30,
+    "carbs": 69,
+    "fat": 17,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas famille",
+      "prise de masse",
+      "rapide"
+    ]
+  },
+  {
+    "id": "riz-lentilles-huile",
+    "name": "Riz lentilles huile",
+    "type": "collation",
+    "category": "collation",
+    "budget": "€€€",
+    "kcal": 860,
+    "protein": 26,
+    "carbs": 77,
+    "fat": 22,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "collation",
+      "prise de masse",
+      "pas cher"
+    ]
+  },
+  {
+    "id": "wrap-thon-mayonnaise",
+    "name": "Wrap thon mayonnaise",
+    "type": "petit-déjeuner",
+    "category": "petit-déjeuner",
+    "budget": "€",
+    "kcal": 420,
+    "protein": 30,
+    "carbs": 85,
+    "fat": 27,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "petit-déjeuner",
+      "prise de masse",
+      "rapide"
+    ]
+  },
+  {
+    "id": "bowl-haricots-rouges-avocat",
+    "name": "Bowl haricots rouges avocat",
+    "type": "repas froid",
+    "category": "repas froid",
+    "budget": "€€",
+    "kcal": 475,
+    "protein": 42,
+    "carbs": 93,
+    "fat": 32,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas froid",
+      "prise de masse",
+      "pas cher"
+    ]
+  },
+  {
+    "id": "croque-avocat-oeufs",
+    "name": "Croque avocat œufs",
+    "type": "repas rapide",
+    "category": "repas rapide",
+    "budget": "€€€",
+    "kcal": 530,
+    "protein": 46,
+    "carbs": 101,
+    "fat": 37,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas rapide",
+      "prise de masse",
+      "rapide"
+    ]
+  },
+  {
+    "id": "pates-saumon-creme",
+    "name": "Pâtes saumon crème",
+    "type": "repas famille",
+    "category": "repas famille",
+    "budget": "€",
+    "kcal": 755,
+    "protein": 50,
+    "carbs": 45,
+    "fat": 12,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas famille",
+      "prise de masse",
+      "pas cher"
+    ]
+  },
+  {
+    "id": "sandwich-poulet-emmental",
+    "name": "Sandwich poulet emmental",
+    "type": "collation",
+    "category": "collation",
+    "budget": "€€",
+    "kcal": 640,
+    "protein": 18,
+    "carbs": 53,
+    "fat": 17,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "collation",
+      "prise de masse",
+      "rapide"
+    ]
+  },
+  {
+    "id": "brioche-lait-chocolate",
+    "name": "Brioche lait chocolaté",
+    "type": "petit-déjeuner",
+    "category": "petit-déjeuner",
+    "budget": "€€€",
+    "kcal": 695,
+    "protein": 22,
+    "carbs": 61,
+    "fat": 22,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "petit-déjeuner",
+      "prise de masse",
+      "pas cher"
+    ]
+  },
+  {
+    "id": "bol-avoine-chocolat-noir",
+    "name": "Bol avoine chocolat noir",
+    "type": "repas froid",
+    "category": "repas froid",
+    "budget": "€",
+    "kcal": 750,
+    "protein": 34,
+    "carbs": 69,
+    "fat": 27,
+    "ingredients": [
+      "1 base féculent ou pain",
+      "1 source de protéines",
+      "1 ajout calorique simple",
+      "sel, poivre, assaisonnement"
+    ],
+    "steps": [
+      "Préparer la base en avance si possible.",
+      "Ajouter la source de protéines.",
+      "Enrichir avec huile, fromage, beurre de cacahuète ou avocat selon la recette.",
+      "Servir une portion confortable et ajuster dans Mass+."
+    ],
+    "tags": [
+      "repas froid",
+      "prise de masse",
+      "rapide"
+    ]
+  }
 ]

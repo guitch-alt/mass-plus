@@ -1,11 +1,20 @@
 "use strict";
 
-const APP_VERSION = "0.3.0";
+const APP_VERSION = "0.4.0";
 const STORAGE_KEY = "mass-plus-state-v2";
 const LEGACY_KEYS = ["mass-plus-mvp-v1", "mass-plus-state"];
+const DB_NAME = "mass-plus-local";
+const DB_VERSION = 1;
 const PHOTO_DB = "mass-plus-photos";
 const PHOTO_STORE = "photos";
 const MEALS = ["petit déjeuner", "déjeuner", "collation", "dîner", "autre"];
+const MEAL_TYPES = {
+  "petit déjeuner": "breakfast",
+  "déjeuner": "lunch",
+  "collation": "snack",
+  "dîner": "dinner",
+  autre: "snack"
+};
 const NAV = [
   ["home", "Accueil", "⌂"],
   ["journal", "Journal", "▦"],
@@ -18,20 +27,45 @@ const ACTIVITY_FACTORS = { faible: 1.2, "légère": 1.375, "modérée": 1.55, "�
 const PROTEIN_FACTORS = { faible: 1.2, "légère": 1.4, "modérée": 1.6, "élevée": 1.8 };
 const EXCLUSION_OPTIONS = ["lactose", "gluten", "œufs", "arachides", "fruits à coque", "soja", "poisson", "végétarien", "aucune"];
 const QUICK_SNACK_IDS = ["skyr", "banane", "amandes", "lait-entier", "pain", "beurre-cacahuete", "fromage", "compote", "oeufs", "avocat"];
-const OFF_FIELDS = "product_name_fr,product_name,brands,nutriments,serving_size,image_front_small_url,allergens_tags,code";
+const OFF_FIELDS = "code,product_name,product_name_fr,generic_name,brands,quantity,serving_size,nutriments,image_front_small_url,countries_tags";
+const SEARCH_ALIASES = {
+  "sucre en morceau": ["sucre en morceaux", "sucre blanc"],
+  "morceau de sucre": ["sucre en morceaux", "sucre blanc"],
+  "sucre morceaux": ["sucre en morceaux", "sucre blanc"],
+  "beurre sale": ["beurre demi sel", "beurre demi-sel"],
+  "beurre demi sel": ["beurre demi-sel"],
+  baguette: ["baguette courante", "pain baguette"],
+  lait: ["lait entier", "lait demi ecreme", "lait demi-écrémé"]
+};
 
 let baseFoods = [];
 let recipes = [];
 let tips = [];
 let currentScreen = "home";
 let selectedMeal = "petit déjeuner";
+let selectedDate = "";
 let recipesTab = "recipes";
 let searchResults = [];
-let state = loadState();
+let dbPromise = null;
+let state = emptyState();
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-const today = () => new Date().toISOString().slice(0, 10);
+const localDateKey = (date = new Date()) => {
+  const value = new Date(date);
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+const today = () => localDateKey();
+const addDays = (dateKey, offset) => {
+  const [year, month, day] = String(dateKey || today()).split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  date.setDate(date.getDate() + offset);
+  return localDateKey(date);
+};
+const dateLabel = (dateKey) => new Intl.DateTimeFormat("fr-FR", { weekday: "long", day: "numeric", month: "long" }).format(new Date(`${dateKey}T12:00:00`));
 const id = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const fmt = (value, digits = 0) => new Intl.NumberFormat("fr-FR", { maximumFractionDigits: digits }).format(Number(value || 0));
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#039;" })[char]);
@@ -47,6 +81,19 @@ function normalizeSearch(text) {
     .replace(/[^a-z0-9 ]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function searchTokens(text) {
+  return normalizeSearch(text)
+    .split(" ")
+    .filter(Boolean)
+    .map((token) => token.endsWith("s") && token.length > 3 ? token.slice(0, -1) : token);
+}
+
+function expandedQueries(query) {
+  const normalized = normalizeSearch(query);
+  const aliases = SEARCH_ALIASES[normalized] || [];
+  return [normalized, ...aliases.map(normalizeSearch)].filter(Boolean);
 }
 
 function emptyState() {
@@ -77,6 +124,168 @@ function emptyState() {
     pendingPhotoMeal: "déjeuner",
     migrations: {}
   };
+}
+
+function openMassDb() {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      [
+        ["profile", { keyPath: "id" }],
+        ["journalEntries", { keyPath: "id" }],
+        ["favorites", { keyPath: "id" }],
+        ["customFoods", { keyPath: "id" }],
+        ["cachedProducts", { keyPath: "id" }],
+        ["savedMeals", { keyPath: "id" }],
+        ["recipes", { keyPath: "id" }],
+        ["settings", { keyPath: "id" }],
+        ["photoAnalyses", { keyPath: "id" }],
+        ["weights", { keyPath: "id" }],
+        ["meta", { keyPath: "id" }]
+      ].forEach(([storeName, options]) => {
+        if (!db.objectStoreNames.contains(storeName)) db.createObjectStore(storeName, options);
+      });
+      const journal = request.transaction.objectStore("journalEntries");
+      if (!journal.indexNames.contains("date")) journal.createIndex("date", "date", { unique: false });
+      if (!journal.indexNames.contains("mealType")) journal.createIndex("mealType", "mealType", { unique: false });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  return dbPromise;
+}
+
+async function idbGetAll(storeName) {
+  const db = await openMassDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, "readonly");
+    const request = tx.objectStore(storeName).getAll();
+    request.onsuccess = () => resolve(request.result || []);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function idbGetOne(storeName, key) {
+  const db = await openMassDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, "readonly");
+    const request = tx.objectStore(storeName).get(key);
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function idbReplaceAll(storeName, records) {
+  const db = await openMassDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, "readwrite");
+    const store = tx.objectStore(storeName);
+    store.clear();
+    records.forEach((record) => store.put(record));
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function idbPutRecord(storeName, record) {
+  const db = await openMassDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, "readwrite");
+    tx.objectStore(storeName).put(record);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+function weightRecord(item) {
+  return { id: item.id || item.date || id(), date: item.date || today(), weight: Number(item.weight || 0) };
+}
+
+function normalizeEntry(entry) {
+  const createdAt = entry.createdAt || new Date().toISOString();
+  const grams = Number(entry.grams || entry.quantity || 0);
+  const meal = entry.meal || mealFromType(entry.mealType) || selectedMeal;
+  return {
+    id: entry.id || id(),
+    date: entry.date || today(),
+    meal,
+    mealType: entry.mealType || MEAL_TYPES[meal] || "snack",
+    foodId: entry.foodId || entry.food || "",
+    foodSource: entry.foodSource || normalizeFoodSource(entry.source),
+    foodName: entry.foodName || entry.name || "Aliment",
+    name: entry.name || entry.foodName || "Aliment",
+    quantity: Number(entry.quantity || grams || 0),
+    unit: entry.unit || "g",
+    grams,
+    kcal: Number(entry.kcal || 0),
+    protein: Number(entry.protein || 0),
+    carbs: Number(entry.carbs || 0),
+    fat: Number(entry.fat || 0),
+    createdAt,
+    updatedAt: entry.updatedAt || createdAt,
+    source: entry.source || sourceLabelFromKey(entry.foodSource)
+  };
+}
+
+function mealFromType(type) {
+  return Object.entries(MEAL_TYPES).find(([, value]) => value === type)?.[0] || "";
+}
+
+function normalizeFoodSource(source) {
+  const value = normalizeSearch(source);
+  if (value.includes("open food")) return "openfoodfacts";
+  if (value.includes("ciqual")) return "ciqual";
+  if (value.includes("perso") || value.includes("custom")) return "custom";
+  if (value.includes("recipe") || value.includes("recette")) return "recipe";
+  return "local";
+}
+
+function sourceLabelFromKey(source) {
+  return {
+    ciqual: "Base française CIQUAL",
+    openfoodfacts: "Open Food Facts",
+    custom: "Aliment personnel",
+    recipe: "Recette",
+    local: "Base Mass+"
+  }[source] || "Base Mass+";
+}
+
+async function loadPersistentState() {
+  const [profileRecord, settingsRecord, entries, favorites, customFoods, cachedProducts, weights, photos] = await Promise.all([
+    idbGetOne("profile", "main"),
+    idbGetOne("settings", "main"),
+    idbGetAll("journalEntries"),
+    idbGetAll("favorites"),
+    idbGetAll("customFoods"),
+    idbGetAll("cachedProducts"),
+    idbGetAll("weights"),
+    idbGetAll("photoAnalyses")
+  ]);
+  const hasIndexedData = Boolean(profileRecord || settingsRecord || entries.length || favorites.length || customFoods.length || cachedProducts.length || weights.length || photos.length);
+  if (!hasIndexedData) {
+    const migrated = loadState();
+    state = migrated;
+    await persistState();
+    await idbPutRecord("meta", { id: "localStorageMigration", completedAt: new Date().toISOString(), version: APP_VERSION });
+    return;
+  }
+  const next = emptyState();
+  next.profile = { ...next.profile, ...(profileRecord?.data || {}) };
+  next.entries = entries.map(normalizeEntry).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  next.favorites = favorites.map(normalizeFavorite);
+  next.customFoods = customFoods;
+  next.offFoods = cachedProducts;
+  next.offCache = settingsRecord?.offCache || {};
+  next.recipeFavorites = settingsRecord?.recipeFavorites || [];
+  next.photos = photos;
+  next.pendingPhotoMeal = settingsRecord?.pendingPhotoMeal || "déjeuner";
+  next.migrations = settingsRecord?.migrations || {};
+  next.weights = weights.map(weightRecord).sort((a, b) => a.date.localeCompare(b.date));
+  const latest = latestWeightFrom(next);
+  if (latest) next.profile.currentWeight = latest;
+  state = next;
 }
 
 function loadState() {
@@ -143,6 +352,31 @@ function normalizeFavorite(favorite) {
 function saveState() {
   state.version = APP_VERSION;
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  persistState().catch(() => toast("Sauvegarde locale indisponible."));
+}
+
+async function persistState() {
+  state.version = APP_VERSION;
+  await Promise.all([
+    idbPutRecord("profile", { id: "main", data: state.profile, updatedAt: new Date().toISOString() }),
+    idbPutRecord("settings", {
+      id: "main",
+      version: APP_VERSION,
+      offCache: state.offCache || {},
+      recipeFavorites: state.recipeFavorites || [],
+      pendingPhotoMeal: state.pendingPhotoMeal || "déjeuner",
+      migrations: state.migrations || {},
+      updatedAt: new Date().toISOString()
+    }),
+    idbReplaceAll("journalEntries", state.entries.map(normalizeEntry)),
+    idbReplaceAll("favorites", state.favorites.map(normalizeFavorite)),
+    idbReplaceAll("savedMeals", state.favorites.map(normalizeFavorite)),
+    idbReplaceAll("customFoods", state.customFoods || []),
+    idbReplaceAll("cachedProducts", state.offFoods || []),
+    idbReplaceAll("weights", (state.weights || []).map(weightRecord)),
+    idbReplaceAll("photoAnalyses", state.photos || []),
+    idbReplaceAll("recipes", recipes || [])
+  ]);
 }
 
 function toast(message) {
@@ -223,6 +457,10 @@ function calc(item, grams) {
   };
 }
 
+function defaultPortion(food) {
+  return Number(food?.defaultPortionG || food?.portionGrams || 100);
+}
+
 function totals(entries = dayEntries()) {
   return entries.reduce((sum, entry) => ({
     kcal: sum.kcal + Number(entry.kcal || 0),
@@ -232,14 +470,15 @@ function totals(entries = dayEntries()) {
   }), { kcal: 0, protein: 0, carbs: 0, fat: 0 });
 }
 
-function dayEntries(date = today()) {
+function dayEntries(date = selectedDate || today()) {
   return state.entries.filter((entry) => entry.date === date);
 }
 
 function allFoods() {
   const custom = state.customFoods.map((food) => ({ ...food, source: "Aliment perso" }));
   const off = state.offFoods.map((food) => ({ ...food, source: "Open Food Facts" }));
-  return [...baseFoods, ...custom, ...off];
+  const recipeFoods = recipes.map(recipeAsFood);
+  return [...baseFoods, ...custom, ...off, ...recipeFoods];
 }
 
 function findFood(foodId, includeAll = true) {
@@ -248,11 +487,16 @@ function findFood(foodId, includeAll = true) {
 }
 
 function searchLocalFoods(query) {
-  const q = normalizeSearch(query);
+  const queries = expandedQueries(query);
+  const tokens = searchTokens(query);
   return allFoods()
     .map((food) => {
       const haystack = normalizeSearch([food.name, food.aliases?.join(" "), food.category, food.brands].join(" "));
-      const score = !q ? 1 : haystack.includes(q) ? 100 : q.split(" ").filter((part) => haystack.includes(part)).length * 20;
+      const exact = queries.some((q) => haystack.split(" ").join(" ") === q || normalizeSearch(food.name) === q || (food.aliases || []).some((alias) => normalizeSearch(alias) === q));
+      const partial = queries.some((q) => q && haystack.includes(q));
+      const tokenHits = tokens.filter((part) => haystack.includes(part)).length;
+      const favoriteBoost = state.favorites.some((favorite) => favorite.items?.some((item) => item.food === food.id)) ? 25 : 0;
+      const score = !queries[0] ? 1 : exact ? 220 + favoriteBoost : partial ? 140 + favoriteBoost : tokenHits * 28 + favoriteBoost;
       return { ...food, score };
     })
     .filter((food) => food.score > 0)
@@ -275,10 +519,33 @@ const OpenFoodFactsService = {
       const response = await fetch(url, { signal: controller.signal });
       if (!response.ok) throw new Error("off unavailable");
       const data = await response.json();
-      const products = (data.products || []).map(mapOffProduct).filter(Boolean);
+      const products = (data.products || []).map(mapOffProduct).filter((food) => food && !food.incompleteNutrition);
       state.offCache[normalized] = products;
       saveState();
       return products;
+    } finally {
+      clearTimeout(timer);
+    }
+  },
+  async productByBarcode(code) {
+    const cleanCode = String(code || "").replace(/\D/g, "");
+    if (!cleanCode) return null;
+    const cached = state.offFoods.find((food) => food.code === cleanCode || food.id === `off-${cleanCode}`);
+    if (cached) return cached;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6500);
+    try {
+      const url = `https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(cleanCode)}.json?fields=${OFF_FIELDS}`;
+      const response = await fetch(url, { signal: controller.signal });
+      if (!response.ok) throw new Error("off unavailable");
+      const data = await response.json();
+      if (!data.product) return null;
+      const food = mapOffProduct({ ...data.product, code: cleanCode });
+      if (food && !state.offFoods.some((item) => item.id === food.id)) {
+        state.offFoods.push(food);
+        saveState();
+      }
+      return food;
     } finally {
       clearTimeout(timer);
     }
@@ -288,8 +555,8 @@ const OpenFoodFactsService = {
 function mapOffProduct(product) {
   const nutriments = product.nutriments || {};
   const kcal = Number(nutriments["energy-kcal_100g"] || nutriments["energy-kcal"] || 0);
-  if (!kcal) return null;
-  const name = product.product_name_fr || product.product_name;
+  const protein = Number(nutriments.proteins_100g || 0);
+  const name = product.product_name_fr || product.product_name || product.generic_name;
   if (!name) return null;
   const code = product.code || id();
   return {
@@ -300,8 +567,9 @@ function mapOffProduct(product) {
     aliases: [],
     category: "produit",
     source: "Open Food Facts",
+    incompleteNutrition: !kcal || !Number.isFinite(protein),
     kcalPer100g: kcal,
-    proteinPer100g: Number(nutriments.proteins_100g || 0),
+    proteinPer100g: protein,
     carbsPer100g: Number(nutriments.carbohydrates_100g || 0),
     fatPer100g: Number(nutriments.fat_100g || 0),
     defaultPortionG: parsePortion(product.serving_size) || 100,
@@ -321,9 +589,17 @@ async function loadData() {
     fetch("./data/recettes-fr.json", { cache: "no-store" }),
     fetch("./data/astuces-fr.json", { cache: "no-store" })
   ]);
-  baseFoods = foodsRes.ok ? await foodsRes.json() : [];
+  baseFoods = foodsRes.ok ? (await foodsRes.json()).map(normalizeFoodRecord) : [];
   recipes = recipesRes.ok ? await recipesRes.json() : [];
   tips = tipsRes.ok ? await tipsRes.json() : [];
+}
+
+function normalizeFoodRecord(food) {
+  return {
+    ...food,
+    defaultPortionG: defaultPortion(food),
+    source: food.source || "Base Mass+"
+  };
 }
 
 function renderNav() {
@@ -371,7 +647,7 @@ function openAddSheet() {
       <button class="sheet-choice" type="button" data-add-choice="food"><span>1</span>Ajouter un aliment</button>
       <button class="sheet-choice" type="button" data-add-choice="photo"><span>2</span>Photographier mon repas</button>
       <button class="sheet-choice" type="button" data-add-choice="saved"><span>3</span>Ajouter un repas enregistré</button>
-      <button class="sheet-choice" type="button" data-add-choice="scan"><span>4</span>Scanner un code-barres — bientôt disponible</button>
+      <button class="sheet-choice" type="button" data-add-choice="scan"><span>4</span>Scanner un code-barres</button>
       <p class="sheet-status" id="addSheetStatus" role="status"></p>
     </div>`;
   document.body.appendChild(overlay);
@@ -393,8 +669,9 @@ function closeAddSheet(options = {}) {
 
 function handleAddChoice(choice) {
   if (choice === "scan") {
-    $("#addSheetStatus").textContent = "Fonction disponible prochainement";
-    toast("Fonction disponible prochainement");
+    history.replaceState(null, "", location.href);
+    closeAddSheet({ keepHistory: true });
+    openBarcodeScanner();
     return;
   }
   history.replaceState(null, "", location.href);
@@ -412,6 +689,211 @@ function handleAddChoice(choice) {
 }
 
 window.addEventListener("popstate", () => closeAddSheet({ fromHistory: true }));
+
+let scannerStream = null;
+let scannerTimer = null;
+let scannerControls = null;
+let scannerDetected = false;
+
+function openBarcodeScanner() {
+  const overlay = document.createElement("div");
+  overlay.id = "scannerModal";
+  overlay.className = "scanner-overlay";
+  overlay.innerHTML = `
+    <div class="scanner-modal" role="dialog" aria-modal="true" aria-labelledby="scannerTitle">
+      <div class="section-head">
+        <h2 id="scannerTitle">Scanner un code-barres</h2>
+        <button class="sheet-close" type="button" aria-label="Fermer" data-close-scanner>×</button>
+      </div>
+      <div class="scanner-frame">
+        <video id="scannerVideo" playsinline muted></video>
+        <div class="scan-box"></div>
+        <p>Placez le code-barres dans le cadre</p>
+      </div>
+      <form id="manualBarcodeForm" class="form-grid compact-form">
+        <label>Code-barres<input name="barcode" inputmode="numeric" autocomplete="off" placeholder="EAN-13, EAN-8 ou UPC"></label>
+        <button class="secondary-button">Saisir le code manuellement</button>
+      </form>
+      <button class="secondary-button compact scanner-torch" id="scannerTorch" type="button" hidden>Lampe</button>
+      <p class="small" id="scannerStatus">Demande d’autorisation caméra...</p>
+      <div id="scannerResult"></div>
+    </div>`;
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add("visible"));
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay || event.target.closest("[data-close-scanner]")) closeBarcodeScanner();
+  });
+  $("#manualBarcodeForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    lookupBarcode(new FormData(event.currentTarget).get("barcode"));
+  });
+  startBarcodeCamera();
+}
+
+function closeBarcodeScanner() {
+  stopBarcodeCamera();
+  const modal = $("#scannerModal");
+  if (!modal) return;
+  modal.classList.remove("visible");
+  setTimeout(() => modal.remove(), 160);
+}
+
+function stopBarcodeCamera() {
+  const controls = scannerControls;
+  scannerControls = null;
+  if (controls?.stop) Promise.resolve(controls.stop()).catch(() => undefined);
+  clearInterval(scannerTimer);
+  scannerTimer = null;
+  if (scannerStream) scannerStream.getTracks().forEach((track) => track.stop());
+  scannerStream = null;
+  const video = $("#scannerVideo");
+  if (video) {
+    video.pause();
+    video.srcObject = null;
+    video.removeAttribute("src");
+    video.load?.();
+  }
+}
+
+async function startBarcodeCamera() {
+  const video = $("#scannerVideo");
+  const status = $("#scannerStatus");
+  if (!navigator.mediaDevices?.getUserMedia) {
+    status.textContent = "Caméra indisponible. Utilisez la saisie manuelle.";
+    return;
+  }
+  scannerDetected = false;
+  if (window.ZXingBrowser?.BrowserMultiFormatReader) {
+    await startZxingScanner(video, status);
+    return;
+  }
+  await startBarcodeDetectorFallback(video, status);
+}
+
+async function startZxingScanner(video, status) {
+  try {
+    const reader = new ZXingBrowser.BrowserMultiFormatReader(undefined, { delayBetweenScanAttempts: 220 });
+    const constraints = {
+      audio: false,
+      video: {
+        facingMode: { ideal: "environment" },
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      }
+    };
+    status.textContent = "Scanner ZXing prêt. Placez le code-barres dans le cadre.";
+    scannerControls = await reader.decodeFromConstraints(constraints, video, (result) => {
+      const code = result?.getText?.() || result?.text;
+      if (!code || scannerDetected) return;
+      scannerDetected = true;
+      navigator.vibrate?.(60);
+      stopBarcodeCamera();
+      lookupBarcode(code);
+    });
+    bindScannerTorch();
+  } catch {
+    await startBarcodeDetectorFallback(video, status);
+  }
+}
+
+function bindScannerTorch() {
+  const button = $("#scannerTorch");
+  if (!button || !scannerControls?.switchTorch) return;
+  button.hidden = false;
+  let torchOn = false;
+  button.addEventListener("click", async () => {
+    torchOn = !torchOn;
+    await scannerControls.switchTorch(torchOn).catch(() => {
+      torchOn = false;
+      button.hidden = true;
+    });
+    button.textContent = torchOn ? "Lampe allumée" : "Lampe";
+  });
+}
+
+async function startBarcodeDetectorFallback(video, status) {
+  try {
+    scannerStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false });
+    video.srcObject = scannerStream;
+    await video.play();
+    if (!("BarcodeDetector" in window)) {
+      status.textContent = "Scanner automatique indisponible ici. Utilisez la saisie manuelle.";
+      return;
+    }
+    const detector = new BarcodeDetector({ formats: ["ean_8", "ean_13", "upc_a", "upc_e"] });
+    status.textContent = "Repli BarcodeDetector actif. Placez le code-barres dans le cadre.";
+    scannerTimer = setInterval(async () => {
+      if (!video.videoWidth || scannerDetected) return;
+      const codes = await detector.detect(video).catch(() => []);
+      const code = codes[0]?.rawValue;
+      if (code) {
+        scannerDetected = true;
+        navigator.vibrate?.(60);
+        stopBarcodeCamera();
+        lookupBarcode(code);
+      }
+    }, 500);
+  } catch {
+    status.textContent = "Autorisation caméra refusée ou indisponible. Utilisez la saisie manuelle.";
+  }
+}
+
+async function lookupBarcode(rawCode) {
+  const code = String(rawCode || "").replace(/\D/g, "");
+  const status = $("#scannerStatus");
+  const result = $("#scannerResult");
+  if (!/^\d{8,14}$/.test(code)) {
+    status.textContent = "Code invalide. Saisissez un EAN-8, EAN-13 ou UPC.";
+    return;
+  }
+  stopBarcodeCamera();
+  status.textContent = `Recherche du produit ${code}...`;
+  try {
+    const food = await OpenFoodFactsService.productByBarcode(code);
+    if (!food) {
+      status.textContent = "Produit non trouvé.";
+      result.innerHTML = `<div class="scanner-product"><strong>Code ${esc(code)}</strong><p class="small">Aucun produit Open Food Facts exploitable.</p><button class="primary-button compact" id="createScannedFood" type="button">Créer cet aliment manuellement</button></div>`;
+      $("#createScannedFood").addEventListener("click", () => {
+        closeBarcodeScanner();
+        selectedMeal = "collation";
+        go("journal");
+        setTimeout(() => $("details.manual-food")?.setAttribute("open", ""), 80);
+      });
+      return;
+    }
+    status.textContent = food.incompleteNutrition ? "Informations nutritionnelles incomplètes." : "Produit trouvé. Confirmez avant ajout.";
+    result.innerHTML = barcodeConfirmationMarkup(food);
+    bindBarcodeConfirmation(food);
+  } catch {
+    status.textContent = "Open Food Facts est indisponible. Si ce produit est déjà en cache, il restera trouvable hors ligne.";
+  }
+}
+
+function barcodeConfirmationMarkup(food) {
+  return `<div class="scanner-product">
+    ${food.image ? `<img class="food-thumb" src="${esc(food.image)}" alt="">` : ""}
+    <div>
+      <strong>${esc(food.name)}</strong>
+      <div class="macro">${esc(food.brands || "Open Food Facts")}</div>
+      <div class="macro">${food.incompleteNutrition ? "Informations nutritionnelles incomplètes" : `${fmt(food.kcalPer100g)} kcal / 100 g · ${fmt(food.proteinPer100g, 1)} g prot.`}</div>
+    </div>
+    <label>Repas<select id="scanMeal">${MEALS.map((meal) => `<option ${meal === selectedMeal ? "selected" : ""}>${esc(meal)}</option>`).join("")}</select></label>
+    <label class="unit-field"><input id="scanGrams" inputmode="numeric" value="${esc(defaultPortion(food))}"><span>g</span></label>
+    <button class="primary-button" id="confirmScanFood" type="button">Ajouter au journal</button>
+  </div>`;
+}
+
+function bindBarcodeConfirmation(food) {
+  $("#confirmScanFood").addEventListener("click", () => {
+    selectedDate = selectedDate || today();
+    selectedMeal = $("#scanMeal").value;
+    const grams = Number($("#scanGrams").value || defaultPortion(food));
+    addEntry(food, grams, selectedMeal, false);
+    closeBarcodeScanner();
+    toast("Produit ajouté après confirmation.");
+    go("journal");
+  });
+}
 
 function metric(label, value) {
   return `<div class="metric"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`;
@@ -431,7 +913,7 @@ function calorieRing(value, goal) {
 }
 
 function renderHome() {
-  const sum = totals();
+  const sum = totals(dayEntries(today()));
   const goals = activeGoals();
   $("#screen").innerHTML = `
     <article class="card hero">
@@ -458,8 +940,12 @@ function renderHome() {
       <button class="secondary-button" id="goPhoto" aria-label="Photographier mon repas">Photo repas</button>
     </div>
     <article class="card">
-      <div class="section-head"><h2>Collations rapides</h2><span class="small">Ajout individuel</span></div>
-      <div class="quick-grid">${QUICK_SNACK_IDS.map(quickSnackCard).join("")}</div>
+      <div class="section-head"><h2>Mes favoris</h2><button class="ghost-inline" id="allFavorites" type="button">Voir tout</button></div>
+      <div class="home-search">
+        <label>Rechercher un aliment<input id="homeFoodSearch" placeholder="sucre, pain, skyr..." autocomplete="off"></label>
+        <button class="secondary-button compact" id="homeSearchButton" type="button">Rechercher</button>
+      </div>
+      <div class="quick-grid favorites-home">${homeFavoritesMarkup()}</div>
     </article>
     <article class="card discover-card">
       <div>
@@ -468,41 +954,84 @@ function renderHome() {
       </div>
       <button class="ghost-inline" data-go="recipes">Ouvrir</button>
     </article>`;
-  $("#goAdd").addEventListener("click", () => { selectedMeal = "petit déjeuner"; go("journal"); });
-  $("#quickSnack").addEventListener("click", () => { selectedMeal = "collation"; go("journal"); });
+  $("#goAdd").addEventListener("click", () => { selectedDate = today(); selectedMeal = "petit déjeuner"; go("journal"); });
+  $("#quickSnack").addEventListener("click", () => { selectedDate = today(); selectedMeal = "collation"; go("journal"); });
   $("#goWeight").addEventListener("click", () => go("weight"));
   $("#goPhoto").addEventListener("click", () => go("photo"));
+  $("#allFavorites").addEventListener("click", () => { selectedMeal = "collation"; selectedDate = today(); go("journal"); setTimeout(() => $("#savedMeals")?.scrollIntoView({ block: "start", behavior: "smooth" }), 80); });
+  $("#homeSearchButton").addEventListener("click", () => openHomeSearch());
+  $("#homeFoodSearch").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      openHomeSearch();
+    }
+  });
   $$("[data-go]").forEach((button) => button.addEventListener("click", () => go(button.dataset.go)));
-  bindQuickSnackButtons();
+  bindHomeFavoriteButtons();
   bindRecipeButtons();
+}
+
+function homeFavoritesMarkup() {
+  if (!state.favorites.length) {
+    return `<p class="small empty-state">Aucun favori pour le moment. Recherche un aliment ou crée un repas enregistré depuis le journal.</p>`;
+  }
+  return state.favorites.slice(0, 4).map(homeFavoriteCard).join("");
+}
+
+function homeFavoriteCard(favorite) {
+  const sum = favoriteTotals(favorite);
+  return `<div class="quick-card">
+    <strong>${esc(favorite.name)}</strong>
+    <span>${fmt(sum.kcal)} kcal · ${fmt(sum.protein, 1)} g prot. · ${esc(favorite.meal)}</span>
+    <button class="secondary-button compact" data-home-favorite="${favorite.id}">Ajouter</button>
+  </div>`;
 }
 
 function quickSnackCard(foodId) {
   const food = findFood(foodId);
   if (!food) return "";
-  const macros = calc(food, food.defaultPortionG);
+  const portion = defaultPortion(food);
+  const macros = calc(food, portion);
   return `<div class="quick-card">
     <strong>${esc(food.name)}</strong>
-    <span>${fmt(food.defaultPortionG)} g · ${fmt(macros.kcal)} kcal · ${fmt(macros.protein, 1)} g prot.</span>
+    <span>${fmt(portion)} g · ${fmt(macros.kcal)} kcal · ${fmt(macros.protein, 1)} g prot.</span>
     <button class="secondary-button compact" data-quick-food="${food.id}">Ajouter</button>
   </div>`;
 }
 
-function bindQuickSnackButtons() {
-  $$("[data-quick-food]").forEach((button) => button.addEventListener("click", () => {
-    const food = findFood(button.dataset.quickFood);
-    addEntry(food, food.defaultPortionG, "collation", false);
-    toast(`${food.name} ajouté en collation.`);
-    renderHome();
+function openHomeSearch() {
+  const value = $("#homeFoodSearch").value.trim();
+  selectedDate = today();
+  selectedMeal = "collation";
+  go("journal");
+  setTimeout(() => {
+    const search = $("#journalSearch");
+    if (!search) return;
+    search.value = value;
+    search.dispatchEvent(new Event("input"));
+    search.focus();
+  }, 80);
+}
+
+function bindHomeFavoriteButtons() {
+  $$("[data-home-favorite]").forEach((button) => button.addEventListener("click", () => {
+    selectedDate = today();
+    addFavoriteToJournal(button.dataset.homeFavorite);
   }));
 }
 
 function renderJournal() {
-  const sum = totals();
+  const sum = totals(dayEntries(selectedDate));
   const goals = activeGoals();
   $("#screen").innerHTML = `
     <article class="card">
-      <h2>Journal alimentaire</h2>
+      <div class="section-head"><h2>Journal alimentaire</h2><button class="ghost-inline" id="openHistory" type="button">Historique</button></div>
+      <div class="date-nav" aria-label="Navigation par jour">
+        <button class="secondary-button compact" id="prevDay" type="button">Préc.</button>
+        <button class="secondary-button compact" id="todayDay" type="button">${selectedDate === today() ? "Aujourd’hui" : "Aujourd’hui"}</button>
+        <button class="secondary-button compact" id="nextDay" type="button">Suiv.</button>
+      </div>
+      <p class="small active-date">${esc(dateLabel(selectedDate))} · ${esc(selectedDate)}</p>
       <div class="grid two">${metric("Calories", `${fmt(sum.kcal)} / ${fmt(goals.calories)}`)}${metric("Protéines", `${fmt(sum.protein, 1)} / ${fmt(goals.protein)} g`)}</div>
     </article>
     <article class="card">
@@ -516,10 +1045,61 @@ function renderJournal() {
       <div class="stack">${MEALS.map(mealBlock).join("")}</div>
     </article>`;
   bindMealTabs();
+  bindDateNav();
   bindFoodSearch("journal", (food, grams) => addEntry(food, grams, selectedMeal));
   bindManualFoodForm();
   bindSavedMeals();
   bindEntryButtons();
+}
+
+function bindDateNav() {
+  $("#prevDay")?.addEventListener("click", () => {
+    selectedDate = addDays(selectedDate, -1);
+    renderJournal();
+  });
+  $("#todayDay")?.addEventListener("click", () => {
+    selectedDate = today();
+    renderJournal();
+  });
+  $("#nextDay")?.addEventListener("click", () => {
+    selectedDate = addDays(selectedDate, 1);
+    renderJournal();
+  });
+  $("#openHistory")?.addEventListener("click", () => renderHistory());
+}
+
+function recentHistoryDays(limit = 30) {
+  const dates = new Set();
+  for (let i = 0; i < limit; i += 1) dates.add(addDays(today(), -i));
+  state.entries.forEach((entry) => dates.add(entry.date));
+  return [...dates].sort((a, b) => b.localeCompare(a)).slice(0, limit);
+}
+
+function renderHistory() {
+  const goals = activeGoals();
+  $("#screen").innerHTML = `
+    <article class="card">
+      <div class="section-head"><h2>Historique</h2><button class="ghost-inline" id="backJournal" type="button">Journal</button></div>
+      <p class="small">Les 30 derniers jours restent consultables et modifiables.</p>
+      <div class="stack history-list">${recentHistoryDays().map((date) => historyRow(date, goals)).join("")}</div>
+    </article>`;
+  $("#backJournal").addEventListener("click", () => renderJournal());
+  $$("[data-open-day]").forEach((button) => button.addEventListener("click", () => {
+    selectedDate = button.dataset.openDay;
+    renderJournal();
+  }));
+}
+
+function historyRow(date, goals) {
+  const entries = dayEntries(date);
+  const sum = totals(entries);
+  const caloriePct = goals.calories ? Math.round((sum.kcal / goals.calories) * 100) : 0;
+  const proteinPct = goals.protein ? Math.round((sum.protein / goals.protein) * 100) : 0;
+  const meals = new Set(entries.map((entry) => entry.mealType || entry.meal)).size;
+  return `<button class="history-row" type="button" data-open-day="${esc(date)}">
+    <span><strong>${esc(dateLabel(date))}</strong><small>${esc(date)} · ${entries.length} entrée(s) · ${meals} repas</small></span>
+    <span><strong>${fmt(sum.kcal)} / ${fmt(goals.calories)} kcal</strong><small>${fmt(sum.protein, 1)} / ${fmt(goals.protein)} g prot. · ${fmt(Math.max(caloriePct, proteinPct))}%</small></span>
+  </button>`;
 }
 
 function savedMealsSection() {
@@ -580,7 +1160,7 @@ function bindFoodSearch(scope, onAdd) {
     results.innerHTML = items.length ? items.map((food) => foodRow(food, scope)).join("") : `<p class="small">Aucun résultat local. Essaie Rechercher pour Open Food Facts.</p>`;
     $$(`[data-add-food][data-scope="${scope}"]`).forEach((button) => button.addEventListener("click", () => {
       const food = searchResults.find((item) => item.id === button.dataset.addFood);
-      const grams = Number($(`[data-grams="${button.dataset.addFood}"][data-scope="${scope}"]`)?.value || food.defaultPortionG);
+      const grams = Number($(`[data-grams="${button.dataset.addFood}"][data-scope="${scope}"]`)?.value || defaultPortion(food));
       if (food.source === "Open Food Facts" && !state.offFoods.some((item) => item.id === food.id)) {
         state.offFoods.push(food);
       }
@@ -619,15 +1199,16 @@ async function doOffSearch(scope, query, renderResults, status) {
 
 function foodRow(food, scope) {
   const source = food.source || "Base Mass+";
+  const portion = defaultPortion(food);
   return `<div class="food-row">
     ${food.image ? `<img class="food-thumb" src="${esc(food.image)}" alt="">` : ""}
     <div>
       <strong>${esc(food.name)}</strong>
       <div class="macro">${esc(source)}${food.brands ? ` · ${esc(food.brands)}` : ""}</div>
-      <div class="macro">${fmt(food.kcalPer100g)} kcal / 100 g · ${fmt(food.proteinPer100g, 1)} g prot. · portion ${fmt(food.defaultPortionG)} g</div>
+      <div class="macro">${food.incompleteNutrition ? "Informations nutritionnelles incomplètes" : `${fmt(food.kcalPer100g)} kcal / 100 g · ${fmt(food.proteinPer100g, 1)} g prot. · portion ${fmt(portion)} g`}</div>
     </div>
     <div class="food-actions">
-      <label class="unit-field"><input inputmode="numeric" value="${food.defaultPortionG}" data-grams="${food.id}" data-scope="${scope}" aria-label="Quantité en grammes"><span>g</span></label>
+      <label class="unit-field"><input inputmode="numeric" value="${portion}" data-grams="${food.id}" data-scope="${scope}" aria-label="Quantité en grammes"><span>g</span></label>
       <button class="primary-button compact" data-add-food="${food.id}" data-scope="${scope}">Ajouter</button>
     </div>
   </div>`;
@@ -661,7 +1242,25 @@ function bindManualFoodForm() {
 function addEntry(food, grams, meal, rerender = true) {
   if (!food || !grams) return;
   const macros = calc(food, grams);
-  state.entries.push({ id: id(), date: today(), meal, foodId: food.id, name: food.name, grams, source: food.source || "Base Mass+", ...macros });
+  const now = new Date().toISOString();
+  const source = normalizeFoodSource(food.source);
+  state.entries.push({
+    id: crypto.randomUUID ? crypto.randomUUID() : id(),
+    date: selectedDate || today(),
+    meal,
+    mealType: MEAL_TYPES[meal] || "snack",
+    foodId: food.id,
+    foodSource: source,
+    foodName: food.name,
+    name: food.name,
+    quantity: Number(grams),
+    unit: food.unit || "g",
+    grams: Number(grams),
+    source: sourceLabelFromKey(source),
+    createdAt: now,
+    updatedAt: now,
+    ...macros
+  });
   saveState();
   if (rerender) {
     toast("Aliment ajouté.");
@@ -703,7 +1302,7 @@ function bindEntryButtons() {
     const next = Number($(`[data-entry-grams="${entry.id}"]`)?.value || entry.grams);
     const food = findFood(entry.foodId);
     if (!entry || !food || !Number.isFinite(next) || next <= 0) return;
-    Object.assign(entry, { grams: next, ...calc(food, next) });
+    Object.assign(entry, { quantity: next, grams: next, updatedAt: new Date().toISOString(), ...calc(food, next) });
     saveState();
     render();
   }));
@@ -933,12 +1532,22 @@ function renderProfile() {
       <h2>Intolérances, allergies et préférences</h2>
       <form id="exclusionForm" class="chips">${EXCLUSION_OPTIONS.map((item) => exclusionChip(item)).join("")}<label class="wide">Autre exclusion<input name="other" value="${esc(state.profile.exclusionOther)}"></label><button class="primary-button compact">Sauvegarder</button></form>
     </article>
+    <article class="card">
+      <h2>Mes données</h2>
+      <div class="inline-actions">
+        <button class="secondary-button compact" id="exportData" type="button">Exporter JSON</button>
+        <label class="secondary-button compact import-button">Importer JSON<input id="importData" type="file" accept="application/json,.json"></label>
+      </div>
+      <p class="small">Export local complet : journal, profil, favoris, aliments personnels, cache Open Food Facts et photos sauvegardées.</p>
+    </article>
     <p class="small app-version">Mass+ v${APP_VERSION}</p>`;
   $("[name='sex']").value = state.profile.sex;
   $("[name='activity']").value = state.profile.activity;
   bindGoalMode();
   bindProfileForm();
   bindExclusionForm();
+  $("#exportData").addEventListener("click", exportUserData);
+  $("#importData").addEventListener("change", importUserData);
   $("#profileWeight").addEventListener("click", () => go("weight"));
 }
 
@@ -1014,6 +1623,58 @@ function bindExclusionForm() {
   });
 }
 
+function exportUserData() {
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    appVersion: APP_VERSION,
+    data: state
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `mass-plus-sauvegarde-${today()}.json`;
+  link.click();
+  URL.revokeObjectURL(url);
+  toast("Sauvegarde JSON exportée.");
+}
+
+async function importUserData(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  try {
+    const parsed = JSON.parse(await file.text());
+    const imported = migrateState(parsed.data || parsed);
+    const replace = confirm("Remplacer les données actuelles par cette sauvegarde ? Annuler = fusionner sans effacer.");
+    if (replace) {
+      state = imported;
+    } else {
+      state.profile = { ...state.profile, ...imported.profile };
+      state.entries = mergeById(state.entries, imported.entries).map(normalizeEntry);
+      state.weights = mergeById(state.weights.map(weightRecord), imported.weights.map(weightRecord));
+      state.favorites = mergeById(state.favorites, imported.favorites).map(normalizeFavorite);
+      state.customFoods = mergeById(state.customFoods, imported.customFoods);
+      state.offFoods = mergeById(state.offFoods, imported.offFoods);
+      state.offCache = { ...imported.offCache, ...state.offCache };
+      state.photos = mergeById(state.photos, imported.photos);
+    }
+    await persistState();
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    toast("Sauvegarde importée.");
+    renderProfile();
+  } catch {
+    toast("Import impossible : fichier JSON invalide.");
+  } finally {
+    event.target.value = "";
+  }
+}
+
+function mergeById(current, incoming) {
+  const map = new Map((current || []).map((item) => [item.id, item]));
+  (incoming || []).forEach((item) => map.set(item.id || id(), item));
+  return [...map.values()];
+}
+
 function filteredRecipes() {
   const exclusions = state.profile.exclusions || [];
   return recipes.filter((recipe) => {
@@ -1043,9 +1704,12 @@ function renderRecipes() {
 }
 
 function recipeCard(recipe) {
+  const duration = recipe.duration || recipe.time || "15 min";
+  const difficulty = recipe.difficulty || recipe.type || recipe.category || "recette";
+  const cost = recipe.cost || recipe.budget || "";
   return `<div class="recipe-card">
-    <div><strong>${esc(recipe.name)}</strong><div class="macro">${esc(recipe.duration)} · ${esc(recipe.difficulty)} · ${esc(recipe.cost)} · ${fmt(recipe.kcal)} kcal · ${fmt(recipe.protein)} g prot.</div></div>
-    <details><summary>Voir les ingrédients</summary><ul>${recipe.ingredients.map((item) => `<li>${esc(item)}</li>`).join("")}</ul><ol>${recipe.steps.map((step) => `<li>${esc(step)}</li>`).join("")}</ol></details>
+    <div><strong>${esc(recipe.name)}</strong><div class="macro">${esc(duration)} · ${esc(difficulty)} ${cost ? `· ${esc(cost)} ` : ""}· ${fmt(recipe.kcal)} kcal · ${fmt(recipe.protein)} g prot.</div></div>
+    <details><summary>Voir les ingrédients</summary><ul>${(recipe.ingredients || []).map((item) => `<li>${esc(item)}</li>`).join("")}</ul><ol>${(recipe.steps || []).map((step) => `<li>${esc(step)}</li>`).join("")}</ol></details>
     <div class="inline-actions"><button class="primary-button compact" data-recipe-journal="${recipe.id}">Ajouter au journal</button><button class="secondary-button compact" data-recipe-fav="${recipe.id}">Enregistrer comme repas</button></div>
   </div>`;
 }
@@ -1058,6 +1722,13 @@ function bindRecipeButtons() {
 function addRecipeToJournal(recipeId) {
   const recipe = recipes.find((item) => item.id === recipeId);
   if (!recipe) return;
+  if (!recipe.items?.length) {
+    addEntry(recipeAsFood(recipe), 100, selectedMeal || "déjeuner", false);
+    saveState();
+    toast("Recette ajoutée au journal.");
+    go("journal");
+    return;
+  }
   recipe.items.forEach((item) => {
     const food = findFood(item.food);
     if (food) addEntry(food, item.grams, recipe.meal || "déjeuner", false);
@@ -1071,17 +1742,31 @@ function addRecipeToJournal(recipeId) {
 function addRecipeToFavorites(recipeId) {
   const recipe = recipes.find((item) => item.id === recipeId);
   if (!recipe) return;
+  const items = recipe.items?.length ? recipe.items.map((item) => {
+    const food = findFood(item.food);
+    return { food: item.food, name: food?.name || item.food, grams: item.grams, ...calc(food || {}, item.grams) };
+  }) : [{ food: `recipe-${recipe.id}`, name: recipe.name, grams: 100, ...calc(recipeAsFood(recipe), 100) }];
   state.favorites.unshift({
     id: id(),
     name: recipe.name,
     meal: recipe.meal || "déjeuner",
-    items: recipe.items.map((item) => {
-      const food = findFood(item.food);
-      return { food: item.food, name: food?.name || item.food, grams: item.grams, ...calc(food || {}, item.grams) };
-    })
+    items
   });
   saveState();
   toast("Recette enregistrée comme repas.");
+}
+
+function recipeAsFood(recipe) {
+  return {
+    id: `recipe-${recipe.id}`,
+    name: recipe.name,
+    source: "Recette",
+    kcalPer100g: Number(recipe.kcal || 0),
+    proteinPer100g: Number(recipe.protein || 0),
+    carbsPer100g: Number(recipe.carbs || 0),
+    fatPer100g: Number(recipe.fat || 0),
+    defaultPortionG: 100
+  };
 }
 
 function renderTips() {
@@ -1221,6 +1906,13 @@ async function renderPhotoList() {
 
 async function init() {
   await loadData();
+  selectedDate = today();
+  try {
+    await loadPersistentState();
+  } catch {
+    state = loadState();
+    setTimeout(() => toast("Stockage IndexedDB indisponible : mode local de secours."), 500);
+  }
   const hashScreen = location.hash.replace("#", "");
   if (hashScreen === "tips") {
     recipesTab = "tips";

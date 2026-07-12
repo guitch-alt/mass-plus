@@ -1,9 +1,10 @@
-const CACHE_NAME = "mass-plus-v0-3-0";
+const CACHE_NAME = "mass-plus-v0-4-1";
 const ASSETS = [
   "./",
   "./index.html",
   "./style.css",
   "./app.js",
+  "./vendor/zxing-browser.min.js",
   "./manifest.json",
   "./data/aliments-fr.json",
   "./data/recettes-fr.json",
