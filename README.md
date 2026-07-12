@@ -48,22 +48,26 @@ Les objectifs nutritionnels sont indicatifs et ne remplacent pas l’avis d’un
 
 ## Analyse photo IA optionnelle
 
-Le frontend reste statique. Sans configuration, l’écran photo indique que l’analyse IA n’est pas configurée et ne présente aucun résultat fictif.
+Le frontend reste statique sur GitHub Pages. La clé OpenAI est lue uniquement par la fonction Supabase et ne doit jamais être ajoutée au JavaScript, au HTML, à `.env.example` ou à `localStorage`. Sans configuration, l’écran photo conserve la photo et ne présente aucun résultat fictif.
 
 Pour activer une vraie analyse :
 
-1. Déployer `supabase/functions/analyze-meal` dans votre projet Supabase.
-2. Ajouter le secret backend `OPENAI_API_KEY` dans Supabase Edge Functions.
-3. Optionnel : définir `OPENAI_VISION_MODEL` côté Supabase.
-4. Dans le navigateur de l’app, configurer l’URL publique de la fonction :
+1. Créer une clé depuis le [tableau de bord OpenAI](https://platform.openai.com/api-keys).
+2. Installer la CLI Supabase puis lier le dépôt : `supabase login` et `supabase link --project-ref VOTRE_PROJECT_REF`.
+3. Ajouter les secrets serveur :
+
+```bash
+supabase secrets set OPENAI_API_KEY=VOTRE_CLE OPENAI_VISION_MODEL=gpt-5.4-mini MASS_PLUS_ALLOWED_ORIGINS=https://guitch-alt.github.io,http://localhost:8080
+```
+
+4. Déployer la fonction publique appelée par GitHub Pages : `supabase functions deploy analyze-meal --no-verify-jwt`.
+5. Configurer dans le navigateur uniquement l’URL non secrète :
 
 ```js
-localStorage.setItem("mass-plus-analysis-endpoint", "https://VOTRE-PROJET.supabase.co/functions/v1/analyze-meal");
+localStorage.setItem("mass-plus-analysis-endpoint", "https://VOTRE_PROJECT_REF.supabase.co/functions/v1/analyze-meal");
 localStorage.setItem("mass-plus-analysis-mode", "live");
 ```
 
-La photo est envoyée uniquement au moment où l’utilisateur lance l’analyse. La fonction ne stocke pas l’image.
+Pour tester localement : lancer `npm start`, ouvrir `http://localhost:8080/#photo`, configurer l’URL ci-dessus dans la console du navigateur puis analyser une photo. Sur localhost, un volet diagnostic affiche la fonction appelée, le statut HTTP, la durée et l’erreur sans donnée sensible. La photo compressée est envoyée uniquement lors de l’analyse et n’est pas stockée par la fonction.
 
-Origines autorisées côté fonction : définissez `MASS_PLUS_ALLOWED_ORIGINS` avec les URLs séparées par des virgules, par exemple `https://guitch-alt.github.io,http://localhost:8080`.
-
-Sans `OPENAI_API_KEY`, la fonction retourne `missing_api_key` et ne produit aucun aliment simulé.
+Avant tout commit, vérifier l’absence de secret avec `git grep -nE 'sk-[A-Za-z0-9_-]{20,}|OPENAI_API_KEY=' -- ':!README.md' ':!.env.example'`. Sans `OPENAI_API_KEY`, la fonction retourne `missing_api_key` et ne produit aucun aliment simulé.

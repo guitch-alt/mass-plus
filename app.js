@@ -1,6 +1,6 @@
 "use strict";
 
-const APP_VERSION = "0.4.4";
+const APP_VERSION = "0.4.5";
 const STORAGE_KEY = "mass-plus-state-v2";
 const LEGACY_KEYS = ["mass-plus-mvp-v1", "mass-plus-state"];
 const DB_NAME = "mass-plus-local";
@@ -32,6 +32,7 @@ const PHOTO_ANALYSIS_ENDPOINT_KEY = "mass-plus-analysis-endpoint";
 const PHOTO_ANALYSIS_MODE_KEY = "mass-plus-analysis-mode";
 const PHOTO_ANALYSIS_DISCLAIMER = "Estimation à confirmer : une photo ne permet pas de connaître précisément les quantités, les huiles, sauces ou ingrédients cachés.";
 const PHOTO_ANALYSIS_NOT_CONFIGURED = "Analyse IA non configurée. La photo est enregistrée, mais elle n’a pas été analysée. Configurez le service d’analyse ou utilisez la saisie manuelle.";
+const PHOTO_ANALYSIS_TIMEOUT_MS = 45000;
 const SEARCH_ALIASES = {
   "sucre en morceau": ["sucre en morceaux", "sucre blanc"],
   "morceau de sucre": ["sucre en morceaux", "sucre blanc"],
@@ -69,6 +70,9 @@ let dbPromise = null;
 let selectedPhotoFile = null;
 let selectedPhotoPreviewUrl = "";
 let photoAnalysisDraft = null;
+let photoAnalysisRunning = false;
+let photoAnalysisRunToken = 0;
+let photoAnalysisDiagnostic = null;
 let state = emptyState();
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -2074,11 +2078,21 @@ async function compressImage(file, mimeType = "image/jpeg", quality = 0.72) {
   canvas.width = Math.round(bitmap.width * scale);
   canvas.height = Math.round(bitmap.height * scale);
   canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  return new Promise((resolve) => canvas.toBlob(resolve, mimeType, quality));
+  if (typeof bitmap.close === "function") bitmap.close();
+  return new Promise((resolve, reject) => canvas.toBlob((blob) => {
+    if (blob) resolve(blob);
+    else reject(new Error("image_compression_failed"));
+  }, mimeType, quality));
 }
 
 async function loadImageBitmap(file) {
-  if ("createImageBitmap" in window) return createImageBitmap(file);
+  if ("createImageBitmap" in window) {
+    try {
+      return await createImageBitmap(file, { imageOrientation: "from-image" });
+    } catch (error) {
+      console.info("ImageBitmap decoding unavailable, using image fallback", { type: file.type, error: error?.message });
+    }
+  }
   return new Promise((resolve, reject) => {
     const img = new Image();
     const url = URL.createObjectURL(file);
@@ -2165,41 +2179,91 @@ async function blobToDataUrl(blob) {
   });
 }
 
+function photoAnalysisDevelopmentMode() {
+  return ["localhost", "127.0.0.1", "::1"].includes(location.hostname) || localStorage.getItem("mass-plus-analysis-diagnostic") === "true";
+}
+
+function photoAnalysisDiagnosticMarkup(diagnostic = photoAnalysisDiagnostic) {
+  if (!photoAnalysisDevelopmentMode() || !diagnostic) return "";
+  return `<details class="analysis-diagnostic"><summary>Diagnostic développement</summary>
+    <dl><dt>Fonction</dt><dd>${esc(diagnostic.functionName || "analyze-meal")}</dd><dt>Statut HTTP</dt><dd>${esc(String(diagnostic.httpStatus || "aucun"))}</dd><dt>Durée</dt><dd>${esc(String(diagnostic.durationMs || 0))} ms</dd><dt>Détail</dt><dd>${esc(diagnostic.message || "Aucun")}</dd></dl>
+  </details>`;
+}
+
 const PhotoAnalysisService = {
+  controller: null,
+  cancel() {
+    this.controller?.abort();
+    this.controller = null;
+  },
   async analyze(meta) {
+    const startedAt = performance.now();
+    let httpStatus = 0;
+    const finish = (result, detail = result.message || result.status) => ({
+      ...result,
+      diagnostic: {
+        functionName: "analyze-meal",
+        httpStatus,
+        durationMs: Math.round(performance.now() - startedAt),
+        message: String(detail || "")
+      }
+    });
     if (!navigator.onLine) {
       console.info("Meal analysis skipped: offline");
-      return { status: "offline", message: "Analyse disponible avec une connexion internet" };
+      return finish({ status: "offline", message: "Analyse disponible avec une connexion internet." }, "navigator_offline");
     }
     const endpoint = photoAnalysisEndpoint();
     if (!endpoint || photoAnalysisMode() === "demo") {
       console.info("Meal analysis not configured", { endpointConfigured: Boolean(endpoint), mode: photoAnalysisMode() });
-      return { status: "notConfigured", message: PHOTO_ANALYSIS_NOT_CONFIGURED };
+      return finish({ status: "notConfigured", message: PHOTO_ANALYSIS_NOT_CONFIGURED }, "endpoint_missing_or_disabled");
     }
     const stored = await idbGet(meta.id).catch((error) => {
       console.error("Meal analysis photo lookup failed", error);
       return null;
     });
-    if (!stored?.blob) return { status: "error", message: "Photo locale introuvable." };
+    if (!stored?.blob) return finish({ status: "error", message: "Photo locale introuvable." }, "local_photo_missing");
     if (stored.blob.size > 4_500_000) {
       console.error("Meal analysis image too large", { bytes: stored.blob.size });
-      return { status: "tooLarge", message: "Image trop volumineuse. Reprends une photo plus légère." };
+      return finish({ status: "tooLarge", message: "Image trop volumineuse. Reprends une photo plus légère." }, `image_too_large:${stored.blob.size}`);
     }
+
+    const controller = new AbortController();
+    this.controller = controller;
+    const timeout = setTimeout(() => controller.abort("timeout"), PHOTO_ANALYSIS_TIMEOUT_MS);
     try {
       const imageBase64 = await blobToDataUrl(stored.blob);
       const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageBase64, meal: meta.meal, date: meta.date })
+        body: JSON.stringify({ imageBase64, meal: meta.meal, date: meta.date }),
+        signal: controller.signal
       });
-      const responseBody = await response.json().catch(() => null);
-      if (!response.ok) return this.errorFromResponse(response, responseBody);
-      const payload = validatePhotoAnalysisPayload(responseBody);
-      if (payload.status !== "success" || !payload.foods.length) return { status: "empty", message: payload.mealDescription || "Aucun aliment détecté.", payload };
-      return { status: "ok", payload, demo: false };
+      httpStatus = response.status;
+      const responseText = await response.text();
+      let responseBody;
+      try {
+        responseBody = JSON.parse(responseText);
+      } catch (error) {
+        console.error("Meal analysis returned invalid JSON", { status: response.status, error });
+        return finish({ status: "invalidJson", message: "Réponse JSON invalide ou inexploitable." }, "response_not_json");
+      }
+      if (!response.ok) return finish(this.errorFromResponse(response, responseBody), responseBody?.code || responseBody?.error || `http_${response.status}`);
+      let payload;
+      try {
+        payload = validatePhotoAnalysisPayload(responseBody);
+      } catch (error) {
+        console.error("Meal analysis payload validation failed", error);
+        return finish({ status: "invalidJson", message: "Réponse JSON invalide ou inexploitable." }, error.message);
+      }
+      if (!payload.foods.length) return finish({ status: "empty", message: payload.analysisWarnings[0] || "Aucun aliment détecté.", payload }, "no_food_detected");
+      return finish({ status: "ok", payload, demo: false }, "success");
     } catch (error) {
-      console.error("Meal analysis network or validation failure", error);
-      return { status: "network", message: "Erreur réseau ou réponse invalide pendant l’analyse." };
+      console.error("Meal analysis network failure", error);
+      if (controller.signal.aborted) return finish({ status: "timeout", message: "L’analyse a dépassé le délai autorisé. Réessaie." }, "request_timeout_or_cancelled");
+      return finish({ status: "network", message: "Connexion au service d’analyse impossible." }, error?.message || "network_error");
+    } finally {
+      clearTimeout(timeout);
+      if (this.controller === controller) this.controller = null;
     }
   },
   errorFromResponse(response, body) {
@@ -2207,6 +2271,8 @@ const PhotoAnalysisService = {
     console.error("Meal analysis backend error", { status: response.status, code, body });
     if (response.status === 413) return { status: "tooLarge", message: "Image trop volumineuse pour le service d’analyse." };
     if (code === "missing_api_key") return { status: "missingApiKey", message: "Clé API absente côté backend. Configure OPENAI_API_KEY dans les secrets Supabase." };
+    if (response.status === 429 || code === "ai_quota_exceeded") return { status: "quota", message: "Quota du service IA atteint. Réessaie plus tard." };
+    if (response.status === 504 || code === "ai_timeout") return { status: "timeout", message: "Le service IA a mis trop de temps à répondre." };
     if (response.status === 401 || response.status === 403) return { status: "backendAuth", message: "Backend configuré, mais accès refusé. Vérifie les origines autorisées et les secrets." };
     if (response.status === 422 || code === "invalid_model_json") return { status: "invalidJson", message: "Réponse JSON invalide ou inexploitable." };
     if (response.status >= 500) return { status: "unavailable", message: "Service IA indisponible. Réessaie plus tard." };
@@ -2217,41 +2283,29 @@ const PhotoAnalysisService = {
 function validatePhotoAnalysisPayload(raw) {
   const data = raw?.analysis && typeof raw.analysis === "object" ? raw.analysis : raw;
   if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Invalid analysis payload");
-  const status = String(data.analysis_status || data.status || "");
-  if (!["success", "no_food_detected", "uncertain"].includes(status)) throw new Error("Invalid analysis status");
-  const foods = Array.isArray(data.foods) ? data.foods : [];
-  const normalizedFoods = foods.slice(0, 16).map((food) => {
+  if (!Array.isArray(data.foods)) throw new Error("Invalid foods list");
+  const foods = data.foods.slice(0, 16).map((food) => {
     if (!food || typeof food !== "object" || Array.isArray(food)) throw new Error("Invalid food item");
-    const name = String(food.name || food.nom || "").trim();
-    const min = nullableNumber(food.estimated_quantity_min_g ?? food.estimatedQuantityMinG ?? food.quantityMinG);
-    const max = nullableNumber(food.estimated_quantity_max_g ?? food.estimatedQuantityMaxG ?? food.quantityMaxG);
-    const directGrams = nullableNumber(food.estimated_quantity_g ?? food.estimatedGrams ?? food.grams ?? food.quantityGrams);
-    const estimatedGrams = directGrams || (min && max ? (min + max) / 2 : min || max || 0);
-    const estimatedCount = nullableNumber(food.estimated_count ?? food.estimatedCount);
-    let confidence = Number(food.confidence ?? 0);
-    if (confidence > 1) confidence /= 100;
-    if (!name || !Number.isFinite(estimatedGrams) || estimatedGrams <= 0) throw new Error("Invalid food identity");
-    if (!Number.isFinite(confidence) || confidence < 0) throw new Error("Invalid confidence");
+    const name = String(food.name || "").trim();
+    const estimatedGrams = nullableNumber(food.estimatedQuantityGrams);
+    let confidence = Number(food.confidence);
+    if (!name || estimatedGrams <= 0) throw new Error("Invalid food identity");
+    if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) throw new Error("Invalid confidence");
     return {
       name,
       estimatedGrams: Math.round(estimatedGrams),
-      quantityMinG: min ? Math.round(min) : 0,
-      quantityMaxG: max ? Math.round(max) : 0,
-      estimatedCount: estimatedCount ? +estimatedCount.toFixed(1) : 0,
-      confidence: Math.max(0, Math.min(1, +confidence.toFixed(2))),
-      visibleState: String(food.visible_state || food.visibleState || "").trim(),
-      needsConfirmation: food.needs_confirmation !== false,
-      uncertainties: arrayOfStrings(food.uncertainties || food.unconfirmedIngredients || food.ingredientsNonConfirmes || [])
+      estimatedCalories: nonNegativeNumber(food.estimatedCalories),
+      estimatedProteinGrams: nonNegativeNumber(food.estimatedProteinGrams),
+      estimatedCarbohydrateGrams: nonNegativeNumber(food.estimatedCarbohydrateGrams),
+      estimatedFatGrams: nonNegativeNumber(food.estimatedFatGrams),
+      confidence: +confidence.toFixed(2),
+      needsConfirmation: food.needsConfirmation !== false
     };
   });
   return {
-    status,
-    provider: String(data.provider || "analysis-service"),
-    mealDescription: String(data.meal_description || data.mealDescription || "").trim(),
-    foods: normalizedFoods,
-    hiddenIngredientsWarning: arrayOfStrings(data.hidden_ingredients_warning || data.unconfirmedIngredients || []),
-    generalConfidence: Math.max(0, Math.min(1, Number(data.general_confidence || 0))),
-    note: String(data.note || "")
+    mealTitle: String(data.mealTitle || (foods.length ? "Repas analysé" : "Aucun aliment détecté")).trim(),
+    foods,
+    analysisWarnings: arrayOfStrings(data.analysisWarnings || [])
   };
 }
 
@@ -2260,28 +2314,50 @@ function nullableNumber(value) {
   return Number.isFinite(number) && number > 0 ? number : 0;
 }
 
+function nonNegativeNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? +number.toFixed(1) : 0;
+}
+
 function arrayOfStrings(value) {
   return Array.isArray(value) ? value.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 12) : [];
 }
 
+function cancelPhotoAnalysisPanel() {
+  photoAnalysisRunToken += 1;
+  photoAnalysisRunning = false;
+  PhotoAnalysisService.cancel();
+  const panel = $("#photoAnalysisPanel");
+  if (panel) panel.innerHTML = "";
+  photoAnalysisDraft = null;
+}
+
 async function startPhotoAnalysis(photoId) {
+  if (photoAnalysisRunning) {
+    toast("Une analyse est déjà en cours.");
+    return;
+  }
   const meta = state.photos.find((photo) => photo.id === photoId);
   if (!meta) return;
+  const runToken = ++photoAnalysisRunToken;
+  photoAnalysisRunning = true;
+  photoAnalysisDiagnostic = null;
   selectedMeal = meta.meal;
   selectedDate = meta.date || today();
   renderPhotoAnalysisState(meta, "loading");
-  const result = await PhotoAnalysisService.analyze(meta);
-  if (result.status !== "ok") {
-    renderPhotoAnalysisState(meta, result.status, result.message);
-    return;
+  try {
+    const result = await PhotoAnalysisService.analyze(meta);
+    if (runToken !== photoAnalysisRunToken) return;
+    photoAnalysisDiagnostic = result.diagnostic || null;
+    if (result.status !== "ok") {
+      renderPhotoAnalysisState(meta, result.status, result.message);
+      return;
+    }
+    photoAnalysisDraft = buildPhotoAnalysisDraft(meta, result.payload);
+    renderPhotoAnalysisDraft();
+  } finally {
+    if (runToken === photoAnalysisRunToken) photoAnalysisRunning = false;
   }
-  const confidentFoods = result.payload.foods.filter((item) => item.confidence >= 0.25);
-  if (!confidentFoods.length) {
-    renderPhotoAnalysisState(meta, "empty", "Aucune détection fiable.");
-    return;
-  }
-  photoAnalysisDraft = buildPhotoAnalysisDraft(meta, { ...result.payload, foods: confidentFoods });
-  renderPhotoAnalysisDraft();
 }
 
 function buildPhotoAnalysisDraft(meta, payload) {
@@ -2291,27 +2367,22 @@ function buildPhotoAnalysisDraft(meta, payload) {
     meal: meta.meal,
     date: meta.date || today(),
     demo: false,
-    mealDescription: payload.mealDescription || "",
-    generalConfidence: payload.generalConfidence || 0,
-    unconfirmedIngredients: payload.hiddenIngredientsWarning || [],
-    items: payload.foods.map((food) => {
-      const match = bestFoodMatch(food.name);
-      return {
-        id: id(),
-        name: match?.name || food.name,
-        detectedName: food.name,
-        grams: food.estimatedGrams,
-        quantityMinG: food.quantityMinG || 0,
-        quantityMaxG: food.quantityMaxG || 0,
-        estimatedCount: food.estimatedCount || 0,
-        visibleState: food.visibleState || "",
-        needsConfirmation: food.needsConfirmation,
-        matchedFoodId: match?.id || "",
-        confidence: food.confidence,
-        aiMacros: null,
-        unconfirmedIngredients: food.uncertainties || []
-      };
-    })
+    mealTitle: payload.mealTitle || "Repas analysé",
+    analysisWarnings: payload.analysisWarnings || [],
+    items: payload.foods.map((food) => ({
+      id: id(),
+      name: food.name,
+      detectedName: food.name,
+      grams: food.estimatedGrams,
+      kcal: food.estimatedCalories,
+      protein: food.estimatedProteinGrams,
+      carbs: food.estimatedCarbohydrateGrams,
+      fat: food.estimatedFatGrams,
+      needsConfirmation: food.needsConfirmation,
+      matchedFoodId: bestFoodMatch(food.name)?.id || "",
+      confidence: food.confidence,
+      source: "Analyse IA à confirmer"
+    }))
   };
 }
 
@@ -2333,25 +2404,28 @@ function renderPhotoAnalysisState(meta, status, message = "") {
   const panel = $("#photoAnalysisPanel");
   if (!panel) return;
   const statusText = {
-    loading: "Analyse du repas en cours...",
-    offline: "Analyse disponible avec une connexion internet",
+    loading: "Analyse en cours…",
+    offline: "Analyse disponible avec une connexion internet.",
     notConfigured: PHOTO_ANALYSIS_NOT_CONFIGURED,
     missingApiKey: "Clé API absente côté backend. Configure OPENAI_API_KEY dans les secrets Supabase.",
     backendAuth: "Backend configuré, mais accès refusé.",
     tooLarge: "Image trop volumineuse.",
     invalidJson: "Réponse JSON invalide ou inexploitable.",
     unavailable: "Service IA indisponible.",
+    quota: "Quota du service IA atteint.",
+    timeout: "Le service d’analyse a mis trop de temps à répondre.",
     network: "Erreur réseau pendant l’analyse.",
-    empty: "Aucune détection fiable.",
+    empty: "Aucun aliment détecté.",
     error: "Analyse impossible."
   }[status] || "Analyse impossible.";
   panel.innerHTML = `<article class="card analysis-card">
     <div class="section-head"><h2>Analyse du repas</h2><button class="ghost-inline" id="closeAnalysis" type="button">Fermer</button></div>
-    <p class="small">${esc(message || statusText)}</p>
-    ${status === "loading" ? `<div class="analysis-loading" aria-live="polite"></div>` : ""}
+    <p class="small" aria-live="polite">${esc(message || statusText)}</p>
+    ${status === "loading" ? `<div class="analysis-loading" aria-hidden="true"></div>` : ""}
+    ${photoAnalysisDiagnosticMarkup()}
     ${status !== "loading" ? `<div class="inline-actions"><button class="primary-button compact" id="retryAnalysis" type="button">Relancer l’analyse</button><button class="secondary-button compact" id="manualAnalysisEntry" type="button">Saisie manuelle</button></div>` : ""}
   </article>`;
-  $("#closeAnalysis")?.addEventListener("click", () => { panel.innerHTML = ""; photoAnalysisDraft = null; });
+  $("#closeAnalysis")?.addEventListener("click", cancelPhotoAnalysisPanel);
   $("#retryAnalysis")?.addEventListener("click", () => startPhotoAnalysis(meta.id));
   $("#manualAnalysisEntry")?.addEventListener("click", () => { selectedMeal = meta.meal; selectedDate = meta.date || today(); go("journal"); });
   panel.scrollIntoView({ block: "start", behavior: "smooth" });
@@ -2360,29 +2434,26 @@ function renderPhotoAnalysisState(meta, status, message = "") {
 function renderPhotoAnalysisDraft() {
   const panel = $("#photoAnalysisPanel");
   if (!panel || !photoAnalysisDraft) return;
-  const totals = photoAnalysisTotals();
   const options = allFoods().slice(0, 120).map((food) => `<option value="${esc(food.name)}"></option>`).join("");
   panel.innerHTML = `<article class="card analysis-card">
     <div class="section-head"><h2>Confirmer le repas</h2><button class="ghost-inline" id="closeAnalysis" type="button">Fermer</button></div>
     <div id="analysisPhotoPreview" class="analysis-photo-preview"><span>Photo analysée</span></div>
     <p class="notice analysis-notice">${esc(PHOTO_ANALYSIS_DISCLAIMER)}</p>
-    ${photoAnalysisDraft.mealDescription ? `<p class="small"><strong>Reconnaissance visuelle :</strong> ${esc(photoAnalysisDraft.mealDescription)}${photoAnalysisDraft.generalConfidence ? ` · confiance globale ${fmt(photoAnalysisDraft.generalConfidence * 100)}%` : ""}</p>` : ""}
+    <p class="small"><strong>${esc(photoAnalysisDraft.mealTitle)}</strong></p>
     <datalist id="analysisFoodOptions">${options}</datalist>
     <div class="stack analysis-list">${photoAnalysisDraft.items.map(analysisItemRow).join("") || `<p class="small">Aucun aliment à confirmer.</p>`}</div>
-    ${photoAnalysisDraft.unconfirmedIngredients.length ? `<p class="small">Ingrédients non confirmés : ${esc(photoAnalysisDraft.unconfirmedIngredients.join(", "))}</p>` : ""}
+    ${photoAnalysisDraft.analysisWarnings.length ? `<div class="analysis-warnings">${photoAnalysisDraft.analysisWarnings.map((warning) => `<p class="small">${esc(warning)}</p>`).join("")}</div>` : ""}
     <div class="analysis-add">
       <label>Aliment manquant<input id="analysisAddName" list="analysisFoodOptions" placeholder="ex. huile d’olive"></label>
       <label>Grammes<input id="analysisAddGrams" inputmode="numeric" value="50"></label>
       <button class="secondary-button compact" id="analysisAddFood" type="button">Ajouter un aliment</button>
     </div>
-    <div class="analysis-totals" id="analysisTotals">
-      ${analysisTotalsMarkup(totals)}
-    </div>
+    <div class="analysis-totals" id="analysisTotals">${analysisTotalsMarkup()}</div>
+    ${photoAnalysisDiagnosticMarkup()}
     <div class="inline-actions">
-      <button class="secondary-button compact" id="confirmAllAnalysis" type="button">Tout confirmer</button>
       <button class="secondary-button compact" id="focusCorrection" type="button">Corriger</button>
-      <button class="secondary-button compact" id="retryAnalysis" type="button">Relancer l’analyse</button>
-      <button class="primary-button" id="confirmPhotoMeal" type="button">Enregistrer dans le Journal</button>
+      <button class="secondary-button compact" id="cancelPhotoAnalysis" type="button">Annuler</button>
+      <button class="primary-button" id="confirmPhotoMeal" type="button">Confirmer et ajouter au journal</button>
     </div>
   </article>`;
   bindPhotoAnalysisDraft();
@@ -2392,25 +2463,24 @@ function renderPhotoAnalysisDraft() {
 
 function analysisItemRow(item) {
   const macros = analysisItemMacros(item);
-  const reliable = Boolean(item.matchedFoodId);
-  const basis = reliable ? `Base Mass+ : ${findFood(item.matchedFoodId)?.name || item.name}` : "Estimation IA à confirmer";
-  const missing = !macros.usable;
   return `<div class="analysis-row" data-analysis-row="${esc(item.id)}">
     <label>Aliment<input value="${esc(item.name)}" list="analysisFoodOptions" data-analysis-name="${esc(item.id)}"></label>
-    <label>Grammes<input value="${esc(item.grams)}" inputmode="numeric" data-analysis-grams="${esc(item.id)}"></label>
-    <label>Unités<input value="${esc(item.estimatedCount || "")}" inputmode="decimal" placeholder="optionnel" data-analysis-count="${esc(item.id)}"></label>
-    <div class="analysis-macros" data-analysis-macros="${esc(item.id)}">
-      ${analysisMacrosMarkup(item, macros, basis, missing)}
+    <label>Quantité (g)<input value="${esc(item.grams)}" type="number" min="1" step="1" data-analysis-field="grams" data-analysis-id="${esc(item.id)}"></label>
+    <div class="analysis-nutrition-grid">
+      <label>Calories<input value="${esc(macros.kcal)}" type="number" min="0" step="1" data-analysis-field="kcal" data-analysis-id="${esc(item.id)}"></label>
+      <label>Protéines (g)<input value="${esc(macros.protein)}" type="number" min="0" step="0.1" data-analysis-field="protein" data-analysis-id="${esc(item.id)}"></label>
+      <label>Glucides (g)<input value="${esc(macros.carbs)}" type="number" min="0" step="0.1" data-analysis-field="carbs" data-analysis-id="${esc(item.id)}"></label>
+      <label>Lipides (g)<input value="${esc(macros.fat)}" type="number" min="0" step="0.1" data-analysis-field="fat" data-analysis-id="${esc(item.id)}"></label>
     </div>
+    <p class="analysis-confidence">Confiance ${fmt(item.confidence * 100)} % · ${esc(item.source)}</p>
     <button class="danger-button compact" data-analysis-delete="${esc(item.id)}" type="button">Supprimer</button>
   </div>`;
 }
 
 function bindPhotoAnalysisDraft() {
-  $("#closeAnalysis")?.addEventListener("click", () => { $("#photoAnalysisPanel").innerHTML = ""; photoAnalysisDraft = null; });
-  $("#retryAnalysis")?.addEventListener("click", () => startPhotoAnalysis(photoAnalysisDraft.photoId));
+  $("#closeAnalysis")?.addEventListener("click", cancelPhotoAnalysisPanel);
+  $("#cancelPhotoAnalysis")?.addEventListener("click", cancelPhotoAnalysisPanel);
   $("#confirmPhotoMeal")?.addEventListener("click", confirmPhotoAnalysis);
-  $("#confirmAllAnalysis")?.addEventListener("click", markAllAnalysisConfirmed);
   $("#focusCorrection")?.addEventListener("click", () => $('[data-analysis-name]')?.focus());
   $("#analysisAddFood")?.addEventListener("click", addAnalysisFoodRow);
   $$('[data-analysis-delete]').forEach((button) => button.addEventListener("click", () => {
@@ -2418,8 +2488,9 @@ function bindPhotoAnalysisDraft() {
     renderPhotoAnalysisDraft();
   }));
   $$('[data-analysis-name]').forEach((input) => input.addEventListener("input", () => updateAnalysisItem(input.dataset.analysisName, { name: input.value })));
-  $$('[data-analysis-grams]').forEach((input) => input.addEventListener("input", () => updateAnalysisItem(input.dataset.analysisGrams, { grams: Number(input.value || 0) })));
-  $$('[data-analysis-count]').forEach((input) => input.addEventListener("input", () => updateAnalysisItem(input.dataset.analysisCount, { estimatedCount: Number(input.value || 0) })));
+  $$('[data-analysis-field]').forEach((input) => input.addEventListener("input", () => {
+    updateAnalysisItem(input.dataset.analysisId, { [input.dataset.analysisField]: Math.max(0, Number(input.value || 0)) });
+  }));
 }
 
 async function renderAnalysisPhotoPreview(photoId) {
@@ -2435,23 +2506,8 @@ function updateAnalysisItem(itemId, patch) {
   const item = photoAnalysisDraft?.items.find((entry) => entry.id === itemId);
   if (!item) return;
   Object.assign(item, patch);
-  if (Object.prototype.hasOwnProperty.call(patch, "name")) {
-    const match = bestFoodMatch(item.name);
-    item.matchedFoodId = match?.id || "";
-    if (match) item.name = match.name;
-  }
+  if (Object.prototype.hasOwnProperty.call(patch, "name")) item.matchedFoodId = bestFoodMatch(item.name)?.id || "";
   refreshAnalysisDraftDisplay();
-}
-
-function analysisMacrosMarkup(item, macros = analysisItemMacros(item), basis = "", missing = !macros.usable) {
-  const matched = findFood(item.matchedFoodId);
-  const detail = basis || (matched ? `Base Mass+ : ${matched.name}` : "Estimation IA à confirmer");
-  const count = item.estimatedCount ? ` · ${fmt(item.estimatedCount, 1)} unité(s)` : "";
-  const range = item.quantityMinG && item.quantityMaxG ? ` · estimation ${fmt(item.quantityMinG)} à ${fmt(item.quantityMaxG)} g` : "";
-  const state = item.visibleState ? ` · ${item.visibleState}` : "";
-  return `<strong>${missing ? "Macros à compléter : associe cet aliment à la banque locale" : `${fmt(macros.kcal)} kcal · ${fmt(macros.protein, 1)} g prot. · ${fmt(macros.carbs, 1)} g gluc. · ${fmt(macros.fat, 1)} g lip.`}</strong>
-    <span>${esc(detail)} · confiance ${fmt(item.confidence * 100)}%${esc(count)}${esc(range)}${esc(state)}</span>
-    ${item.unconfirmedIngredients.length ? `<span>Incertitudes : ${esc(item.unconfirmedIngredients.join(", "))}</span>` : ""}`;
 }
 
 function analysisTotalsMarkup(totals = photoAnalysisTotals()) {
@@ -2463,19 +2519,8 @@ function analysisTotalsMarkup(totals = photoAnalysisTotals()) {
 
 function refreshAnalysisDraftDisplay() {
   if (!photoAnalysisDraft) return;
-  photoAnalysisDraft.items.forEach((item) => {
-    const node = $(`[data-analysis-macros="${item.id}"]`);
-    if (node) node.innerHTML = analysisMacrosMarkup(item);
-  });
   const totalsNode = $("#analysisTotals");
   if (totalsNode) totalsNode.innerHTML = analysisTotalsMarkup();
-}
-
-function markAllAnalysisConfirmed() {
-  if (!photoAnalysisDraft) return;
-  photoAnalysisDraft.items.forEach((item) => { item.needsConfirmation = false; });
-  toast("Aliments marqués comme confirmés. Tu peux encore corriger avant l’enregistrement.");
-  refreshAnalysisDraftDisplay();
 }
 
 function addAnalysisFoodRow() {
@@ -2486,6 +2531,7 @@ function addAnalysisFoodRow() {
     return;
   }
   const match = bestFoodMatch(name);
+  const macros = match ? calc(match, grams) : { kcal: 0, protein: 0, carbs: 0, fat: 0 };
   photoAnalysisDraft.items.push({
     id: id(),
     name: match?.name || name,
@@ -2493,19 +2539,21 @@ function addAnalysisFoodRow() {
     grams,
     matchedFoodId: match?.id || "",
     confidence: match ? 1 : 0,
-    visibleState: "ajout manuel",
+    kcal: macros.kcal,
+    protein: macros.protein,
+    carbs: macros.carbs,
+    fat: macros.fat,
     needsConfirmation: true,
-    aiMacros: null,
-    unconfirmedIngredients: match ? [] : ["valeurs nutritionnelles à associer"]
+    source: match ? `Base Mass+ : ${match.name}` : "Ajout manuel"
   });
   renderPhotoAnalysisDraft();
 }
 
 function analysisItemMacros(item) {
   const grams = Math.max(0, Number(item.grams || 0));
-  const matched = findFood(item.matchedFoodId);
-  if (matched && grams > 0) return { ...calc(matched, grams), usable: true, food: matched };
-  return { kcal: 0, protein: 0, carbs: 0, fat: 0, usable: false, food: null };
+  const values = [item.kcal, item.protein, item.carbs, item.fat].map(Number);
+  const usable = Boolean(item.name?.trim()) && grams > 0 && values.every((value) => Number.isFinite(value) && value >= 0);
+  return { kcal: values[0] || 0, protein: values[1] || 0, carbs: values[2] || 0, fat: values[3] || 0, usable, food: null };
 }
 
 function photoAnalysisTotals() {
@@ -2517,8 +2565,6 @@ function photoAnalysisTotals() {
 }
 
 function foodFromAnalysisItem(item) {
-  const matched = findFood(item.matchedFoodId);
-  if (matched) return matched;
   const macros = analysisItemMacros(item);
   const grams = Math.max(1, Number(item.grams || 100));
   return {
@@ -2541,7 +2587,7 @@ function confirmPhotoAnalysis() {
   }
   const incomplete = photoAnalysisDraft.items.filter((item) => !analysisItemMacros(item).usable);
   if (incomplete.length) {
-    toast("Associe les aliments sans macros avant confirmation.");
+    toast("Vérifie les noms, quantités et valeurs nutritionnelles avant confirmation.");
     return;
   }
   selectedDate = photoAnalysisDraft.date;
@@ -2552,7 +2598,7 @@ function confirmPhotoAnalysis() {
       photoMealId: photoAnalysisDraft.id,
       analysisId: photoAnalysisDraft.id,
       confidence: item.confidence,
-      analysisDemo: photoAnalysisDraft.demo
+      analysisDemo: false
     });
   });
   const totals = photoAnalysisTotals();
@@ -2561,7 +2607,10 @@ function confirmPhotoAnalysis() {
     meta.analysisConfirmedAt = new Date().toISOString();
     meta.analysisDemo = false;
     meta.analysisTotals = totals;
-    meta.analysisFoods = photoAnalysisDraft.items.map((item) => ({ name: item.name, grams: Number(item.grams), count: Number(item.estimatedCount || 0), confidence: item.confidence }));
+    meta.analysisFoods = photoAnalysisDraft.items.map((item) => {
+      const macros = analysisItemMacros(item);
+      return { name: item.name, grams: Number(item.grams), confidence: item.confidence, kcal: macros.kcal, protein: macros.protein, carbs: macros.carbs, fat: macros.fat };
+    });
   }
   saveState();
   toast("Repas ajouté au journal après confirmation.");
