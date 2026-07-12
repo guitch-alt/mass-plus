@@ -13,7 +13,7 @@ Version test fonctionnelle iPhone et Android via GitHub Pages.
 - Installation Android : ouvrir l’URL dans Chrome, puis Installer l’application ou Ajouter à l’écran d’accueil.
 - Données locales par défaut : pas de compte obligatoire.
 - Les photos sont stockées dans IndexedDB.
-- Analyse photo optionnelle via une fonction backend sécurisée ; le mode démonstration fonctionne sans clé API.
+- Analyse photo optionnelle via une fonction backend sécurisée ; sans configuration, l’app indique clairement que l’analyse IA n’est pas configurée.
 - Le journal, le profil, les favoris et les aliments personnalisés sont stockés localement.
 
 ## Fonctionnalités
@@ -27,7 +27,7 @@ Version test fonctionnelle iPhone et Android via GitHub Pages.
 - Favoris contenant plusieurs aliments.
 - Recettes hypercaloriques filtrées selon intolérances et préférences.
 - Astuces simples.
-- Photo de repas avec parcours d’analyse assistée : démonstration locale par défaut, puis vraie analyse via backend sécurisé quand il est configuré.
+- Photo de repas avec parcours d’analyse assistée : vraie analyse via backend sécurisé quand il est configuré, sinon saisie manuelle.
 
 ## Confidentialité
 
@@ -48,7 +48,7 @@ Les objectifs nutritionnels sont indicatifs et ne remplacent pas l’avis d’un
 
 ## Analyse photo IA optionnelle
 
-Le frontend reste statique. Sans configuration, l’écran photo utilise un mode démonstration clairement indiqué et ne contacte aucun service externe.
+Le frontend reste statique. Sans configuration, l’écran photo indique que l’analyse IA n’est pas configurée et ne présente aucun résultat fictif.
 
 Pour activer une vraie analyse :
 
@@ -62,12 +62,8 @@ localStorage.setItem("mass-plus-analysis-endpoint", "https://VOTRE-PROJET.supaba
 localStorage.setItem("mass-plus-analysis-mode", "live");
 ```
 
-Pour revenir au mode démonstration :
-
-```js
-localStorage.setItem("mass-plus-analysis-mode", "demo");
-```
-
 La photo est envoyée uniquement au moment où l’utilisateur lance l’analyse. La fonction ne stocke pas l’image.
 
 Origines autorisées côté fonction : définissez `MASS_PLUS_ALLOWED_ORIGINS` avec les URLs séparées par des virgules, par exemple `https://guitch-alt.github.io,http://localhost:8080`.
+
+Sans `OPENAI_API_KEY`, la fonction retourne `missing_api_key` et ne produit aucun aliment simulé.

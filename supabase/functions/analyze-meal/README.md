@@ -1,12 +1,13 @@
 # Supabase Edge Function `analyze-meal`
 
-Cette fonction reçoit une image encodée en data URL, appelle le fournisseur IA côté serveur et renvoie un JSON strict pour le parcours de confirmation Mass+.
+Cette fonction reçoit une image encodée en data URL, appelle le fournisseur IA côté serveur et renvoie un JSON strict de reconnaissance visuelle. Elle ne calcule pas les calories : Mass+ associe ensuite les aliments reconnus à sa banque locale.
 
 Secrets à configurer dans Supabase, jamais dans le frontend ni dans Git :
 
 ```bash
 supabase secrets set OPENAI_API_KEY=...
 supabase secrets set OPENAI_VISION_MODEL=gpt-5.6
+supabase secrets set MASS_PLUS_ALLOWED_ORIGINS=https://guitch-alt.github.io,http://localhost:8080
 ```
 
 Déploiement :
@@ -15,6 +16,4 @@ Déploiement :
 supabase functions deploy analyze-meal
 ```
 
-Sans `OPENAI_API_KEY`, la fonction retourne une réponse de démonstration marquée `demo: true`. Elle ne stocke pas l’image reçue.
-
-Origines autorisées côté fonction : définissez `MASS_PLUS_ALLOWED_ORIGINS` avec les URLs séparées par des virgules, par exemple `https://guitch-alt.github.io,http://localhost:8080`.
+Sans `OPENAI_API_KEY`, la fonction retourne `missing_api_key` et ne produit aucun aliment simulé. Elle ne stocke pas l’image reçue.
