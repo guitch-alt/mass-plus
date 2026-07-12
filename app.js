@@ -1,6 +1,6 @@
 "use strict";
 
-const APP_VERSION = "0.4.5";
+const APP_VERSION = "1.0.0";
 const STORAGE_KEY = "mass-plus-state-v2";
 const LEGACY_KEYS = ["mass-plus-mvp-v1", "mass-plus-state"];
 const DB_NAME = "mass-plus-local";
@@ -28,11 +28,54 @@ const PROTEIN_FACTORS = { faible: 1.2, "légère": 1.4, "modérée": 1.6, "élev
 const EXCLUSION_OPTIONS = ["lactose", "gluten", "œufs", "arachides", "fruits à coque", "soja", "poisson", "végétarien", "aucune"];
 const QUICK_SNACK_IDS = ["skyr", "banane", "amandes", "lait-entier", "pain", "beurre-cacahuete", "fromage", "compote", "oeufs", "avocat"];
 const OFF_FIELDS = "code,product_name,product_name_fr,generic_name,brands,quantity,serving_size,nutriments,image_front_small_url,countries_tags";
-const PHOTO_ANALYSIS_ENDPOINT_KEY = "mass-plus-analysis-endpoint";
-const PHOTO_ANALYSIS_MODE_KEY = "mass-plus-analysis-mode";
-const PHOTO_ANALYSIS_DISCLAIMER = "Estimation à confirmer : une photo ne permet pas de connaître précisément les quantités, les huiles, sauces ou ingrédients cachés.";
-const PHOTO_ANALYSIS_NOT_CONFIGURED = "Analyse IA non configurée. La photo est enregistrée, mais elle n’a pas été analysée. Configurez le service d’analyse ou utilisez la saisie manuelle.";
-const PHOTO_ANALYSIS_TIMEOUT_MS = 45000;
+const PHOTO_ANALYSIS_DISCLAIMER = "Vérifiez toujours les aliments, quantités et valeurs nutritionnelles avant l’ajout au journal.";
+const MASS_PLUS_AI_PROMPT = `Analyse précisément cette photo alimentaire pour l'application Mass+.
+
+Identifie uniquement les aliments réellement visibles.
+N'invente aucun ingrédient invisible.
+
+Pour chaque aliment, estime :
+- le nom en français ;
+- la quantité en grammes ou en unités ;
+- les calories ;
+- les protéines en grammes ;
+- les glucides en grammes ;
+- les lipides en grammes.
+
+Donne également le total du repas.
+
+Réponds uniquement avec ce JSON, sans texte avant ou après :
+
+{
+  "mealName": "Nom du repas",
+  "foods": [
+    {
+      "name": "Nom de l'aliment",
+      "quantity": "Quantité estimée",
+      "calories": 0,
+      "protein": 0,
+      "carbohydrates": 0,
+      "fat": 0
+    }
+  ],
+  "totals": {
+    "calories": 0,
+    "protein": 0,
+    "carbohydrates": 0,
+    "fat": 0
+  },
+  "uncertainties": "Éléments éventuels à confirmer"
+}
+
+Les valeurs nutritionnelles doivent être numériques.
+
+Si plusieurs aliments sont visibles, crée une ligne par aliment.
+
+Si une quantité est difficile à estimer, donne une estimation prudente et indique l'incertitude.
+
+Si un emballage ou une étiquette nutritionnelle est clairement lisible, utilise les informations visibles.
+
+Ne renvoie jamais systématiquement les mêmes aliments.`;
 const SEARCH_ALIASES = {
   "sucre en morceau": ["sucre en morceaux", "sucre blanc"],
   "morceau de sucre": ["sucre en morceaux", "sucre blanc"],
@@ -70,9 +113,6 @@ let dbPromise = null;
 let selectedPhotoFile = null;
 let selectedPhotoPreviewUrl = "";
 let photoAnalysisDraft = null;
-let photoAnalysisRunning = false;
-let photoAnalysisRunToken = 0;
-let photoAnalysisDiagnostic = null;
 let state = emptyState();
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -1281,10 +1321,12 @@ function foodSearchMarkup(scope, placeholder = "banane, lait, produit...") {
 function manualFoodMarkup() {
   return `<form id="manualFoodForm" class="form-grid compact-form">
     <label>Nom<input name="name" required></label>
-    <label>Quantité<input name="quantity" inputmode="decimal" value="100"></label>
+    <label>Quantité (g)<input name="quantity" type="number" inputmode="decimal" min="1" step="1" value="100"></label>
     <label>Unité<input name="unit" value="g"></label>
-    <label>Calories<input name="kcal" inputmode="numeric" required></label>
-    <label>Protéines<input name="protein" inputmode="decimal" value="0"></label>
+    <label>Calories<input name="kcal" type="number" inputmode="decimal" min="0" step="1" required></label>
+    <label>Protéines (g)<input name="protein" type="number" inputmode="decimal" min="0" step="0.1" value="0"></label>
+    <label>Glucides (g)<input name="carbs" type="number" inputmode="decimal" min="0" step="0.1" value="0"></label>
+    <label>Lipides (g)<input name="fat" type="number" inputmode="decimal" min="0" step="0.1" value="0"></label>
     <button class="primary-button">Créer et réutiliser</button>
   </form>`;
 }
@@ -1365,8 +1407,8 @@ function bindManualFoodForm() {
       source: "Aliment perso",
       kcalPer100g: Number(data.kcal || 0) / quantity * 100,
       proteinPer100g: Number(data.protein || 0) / quantity * 100,
-      carbsPer100g: 0,
-      fatPer100g: 0,
+      carbsPer100g: Number(data.carbs || 0) / quantity * 100,
+      fatPer100g: Number(data.fat || 0) / quantity * 100,
       defaultPortionG: quantity,
       unit: data.unit || "g"
     };
@@ -1980,19 +2022,22 @@ function renderPhoto() {
   selectedPhotoFile = null;
   revokePhotoPreview();
   photoAnalysisDraft = null;
+  closeAiImportModal();
   $("#screen").innerHTML = `
-    <article class="card">
+    <article class="card photo-intro">
       <h2>Photographier mon repas</h2>
-      <p class="small">La photo sert de repère visuel. Les calories sont calculées à partir des aliments et quantités que vous confirmez.</p>
+      <p class="small">La photo reste sur cet appareil. Mass+ ne l’envoie à aucun serveur : vous choisissez vous-même une application avec la feuille de partage.</p>
       <form id="photoForm" class="form-grid photo-form">
         <label>Repas<select name="meal">${MEALS.map((meal) => `<option ${meal === state.pendingPhotoMeal ? "selected" : ""}>${esc(meal)}</option>`).join("")}</select></label>
         <div class="photo-picker wide">
           <input id="photoCameraInput" class="visually-hidden-file" type="file" accept="image/*" capture="environment">
           <input id="photoLibraryInput" class="visually-hidden-file" type="file" accept="image/*">
-          <button class="secondary-button wide" id="takePhotoButton" type="button">Prendre une photo</button>
-          <button class="secondary-button wide" id="choosePhotoButton" type="button">Choisir dans la photothèque</button>
+          <div class="photo-picker-actions">
+            <button class="secondary-button wide" id="takePhotoButton" type="button">Prendre une photo</button>
+            <button class="secondary-button wide" id="choosePhotoButton" type="button">Choisir dans la photothèque</button>
+          </div>
           <div id="photoPreview" class="photo-preview"><span>Aucune photo sélectionnée</span></div>
-          <p class="small" id="photoFileStatus">La photo reste stockée localement tant que vous ne lancez pas l’analyse.</p>
+          <p class="small" id="photoFileStatus">JPEG, PNG et HEIC sont convertis localement en JPEG lorsque le navigateur le permet.</p>
         </div>
         <button class="primary-button wide" id="savePhotoButton" disabled>Enregistrer la photo</button>
       </form>
@@ -2070,14 +2115,16 @@ async function idbGet(photoId) {
   });
 }
 
-async function compressImage(file, mimeType = "image/jpeg", quality = 0.72) {
+async function compressImage(file, mimeType = "image/jpeg", quality = 0.76) {
   const bitmap = await loadImageBitmap(file);
-  const max = 1100;
+  const max = 1280;
   const scale = Math.min(1, max / Math.max(bitmap.width, bitmap.height));
   const canvas = document.createElement("canvas");
-  canvas.width = Math.round(bitmap.width * scale);
-  canvas.height = Math.round(bitmap.height * scale);
-  canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("canvas_unavailable");
+  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   if (typeof bitmap.close === "function") bitmap.close();
   return new Promise((resolve, reject) => canvas.toBlob((blob) => {
     if (blob) resolve(blob);
@@ -2100,7 +2147,10 @@ async function loadImageBitmap(file) {
       URL.revokeObjectURL(url);
       resolve(img);
     };
-    img.onerror = reject;
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("image_decode_failed"));
+    };
     img.src = url;
   });
 }
@@ -2111,12 +2161,16 @@ async function savePhotoFromForm(event) {
   const file = selectedPhotoFile;
   const meal = form.meal.value;
   if (!file) {
-    toast("Choisis une photo.");
+    toast("Choisissez une photo.");
+    return;
+  }
+  if (file.size > 30_000_000) {
+    toast("Cette image est trop volumineuse. Choisissez une photo plus légère.");
     return;
   }
   const saveButton = $("#savePhotoButton");
   saveButton.disabled = true;
-  saveButton.textContent = "Compression...";
+  saveButton.textContent = "Compression locale...";
   try {
     const blob = await compressImage(file);
     const photoId = id();
@@ -2124,11 +2178,11 @@ async function savePhotoFromForm(event) {
     state.photos.unshift({ id: photoId, date: today(), meal, createdAt: new Date().toISOString() });
     state.pendingPhotoMeal = meal;
     saveState();
-    toast("Photo enregistrée.");
     renderPhoto();
-    setTimeout(() => startPhotoAnalysis(photoId), 80);
-  } catch {
-    toast("Photo impossible à enregistrer.");
+    toast("Photo enregistrée. Elle reste sur cet appareil.");
+  } catch (error) {
+    console.error("Photo save failed", error);
+    toast("Cette photo ne peut pas être lue ici. Essayez une image JPEG ou PNG.");
     saveButton.disabled = false;
     saveButton.textContent = "Enregistrer la photo";
   }
@@ -2140,250 +2194,297 @@ async function renderPhotoList() {
     node.innerHTML = `<p class="small">Aucune photo pour le moment.</p>`;
     return;
   }
-  const cards = await Promise.all(state.photos.slice(0, 8).map(async (meta) => {
+  const cards = await Promise.all(state.photos.slice(0, 12).map(async (meta) => {
     const stored = await idbGet(meta.id).catch(() => null);
     const url = stored?.blob ? URL.createObjectURL(stored.blob) : "";
     const total = meta.analysisTotals ? `<div class="macro">Confirmé : ${fmt(meta.analysisTotals.kcal)} kcal · ${fmt(meta.analysisTotals.protein, 1)} g prot.</div>` : "";
-    return `<div class="photo-card">${url ? `<img src="${url}" alt="Photo repas">` : ""}<div><strong>${esc(meta.meal)}</strong><div class="macro">${esc(meta.date)}</div>${total}<div class="photo-actions"><button class="primary-button compact" data-photo-analyze="${esc(meta.id)}">Analyser le repas</button><button class="secondary-button compact" data-photo-manual="${esc(meta.meal)}">Saisie manuelle</button><button class="danger-button compact" data-delete-photo="${esc(meta.id)}">Supprimer</button></div></div></div>`;
+    return `<div class="photo-card">${url ? `<img src="${url}" alt="Photo repas">` : ""}<div><strong>${esc(meta.meal)}</strong><div class="macro">${esc(meta.date)}</div>${total}<p class="photo-share-help">Choisissez ChatGPT, Gemini ou votre IA préférée. Le prompt est copié automatiquement si nécessaire.</p><div class="photo-actions"><button class="primary-button" data-photo-share="${esc(meta.id)}" type="button">Partager à mon IA</button><button class="secondary-button compact" data-photo-import="${esc(meta.id)}" type="button">Coller la réponse IA</button><button class="secondary-button compact" data-photo-manual="${esc(meta.id)}" type="button">Saisie manuelle</button><button class="danger-button compact" data-delete-photo="${esc(meta.id)}" type="button">Supprimer</button></div></div></div>`;
   }));
   node.innerHTML = cards.join("");
-  $$('[data-photo-analyze]').forEach((button) => button.addEventListener("click", () => startPhotoAnalysis(button.dataset.photoAnalyze)));
-  $$('[data-photo-manual]').forEach((button) => button.addEventListener("click", () => {
-    selectedMeal = button.dataset.photoManual;
-    selectedDate = today();
-    go("journal");
-  }));
+  $$('[data-photo-share]').forEach((button) => button.addEventListener("click", () => sharePhotoWithAi(button.dataset.photoShare)));
+  $$('[data-photo-import]').forEach((button) => button.addEventListener("click", () => openAiImportModal(button.dataset.photoImport)));
+  $$('[data-photo-manual]').forEach((button) => button.addEventListener("click", () => startManualPhotoEntry(button.dataset.photoManual)));
   $$('[data-delete-photo]').forEach((button) => button.addEventListener("click", async () => {
-    await idbDelete(button.dataset.deletePhoto);
-    state.photos = state.photos.filter((photo) => photo.id !== button.dataset.deletePhoto);
-    if (photoAnalysisDraft?.photoId === button.dataset.deletePhoto) photoAnalysisDraft = null;
+    const photoId = button.dataset.deletePhoto;
+    if (!confirm("Supprimer cette photo enregistrée ?")) return;
+    await idbDelete(photoId);
+    state.photos = state.photos.filter((photo) => photo.id !== photoId);
+    if (photoAnalysisDraft?.photoId === photoId) photoAnalysisDraft = null;
     saveState();
     renderPhoto();
   }));
 }
 
-function photoAnalysisEndpoint() {
-  return localStorage.getItem(PHOTO_ANALYSIS_ENDPOINT_KEY) || window.MASS_PLUS_ANALYSIS_ENDPOINT || "";
-}
-
-function photoAnalysisMode() {
-  return localStorage.getItem(PHOTO_ANALYSIS_MODE_KEY) || window.MASS_PLUS_ANALYSIS_MODE || "live";
-}
-
-async function blobToDataUrl(blob) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(blob);
-  });
-}
-
-function photoAnalysisDevelopmentMode() {
-  return ["localhost", "127.0.0.1", "::1"].includes(location.hostname) || localStorage.getItem("mass-plus-analysis-diagnostic") === "true";
-}
-
-function photoAnalysisDiagnosticMarkup(diagnostic = photoAnalysisDiagnostic) {
-  if (!photoAnalysisDevelopmentMode() || !diagnostic) return "";
-  return `<details class="analysis-diagnostic"><summary>Diagnostic développement</summary>
-    <dl><dt>Fonction</dt><dd>${esc(diagnostic.functionName || "analyze-meal")}</dd><dt>Statut HTTP</dt><dd>${esc(String(diagnostic.httpStatus || "aucun"))}</dd><dt>Durée</dt><dd>${esc(String(diagnostic.durationMs || 0))} ms</dd><dt>Détail</dt><dd>${esc(diagnostic.message || "Aucun")}</dd></dl>
-  </details>`;
-}
-
-const PhotoAnalysisService = {
-  controller: null,
-  cancel() {
-    this.controller?.abort();
-    this.controller = null;
-  },
-  async analyze(meta) {
-    const startedAt = performance.now();
-    let httpStatus = 0;
-    const finish = (result, detail = result.message || result.status) => ({
-      ...result,
-      diagnostic: {
-        functionName: "analyze-meal",
-        httpStatus,
-        durationMs: Math.round(performance.now() - startedAt),
-        message: String(detail || "")
-      }
-    });
-    if (!navigator.onLine) {
-      console.info("Meal analysis skipped: offline");
-      return finish({ status: "offline", message: "Analyse disponible avec une connexion internet." }, "navigator_offline");
-    }
-    const endpoint = photoAnalysisEndpoint();
-    if (!endpoint || photoAnalysisMode() === "demo") {
-      console.info("Meal analysis not configured", { endpointConfigured: Boolean(endpoint), mode: photoAnalysisMode() });
-      return finish({ status: "notConfigured", message: PHOTO_ANALYSIS_NOT_CONFIGURED }, "endpoint_missing_or_disabled");
-    }
-    const stored = await idbGet(meta.id).catch((error) => {
-      console.error("Meal analysis photo lookup failed", error);
-      return null;
-    });
-    if (!stored?.blob) return finish({ status: "error", message: "Photo locale introuvable." }, "local_photo_missing");
-    if (stored.blob.size > 4_500_000) {
-      console.error("Meal analysis image too large", { bytes: stored.blob.size });
-      return finish({ status: "tooLarge", message: "Image trop volumineuse. Reprends une photo plus légère." }, `image_too_large:${stored.blob.size}`);
-    }
-
-    const controller = new AbortController();
-    this.controller = controller;
-    const timeout = setTimeout(() => controller.abort("timeout"), PHOTO_ANALYSIS_TIMEOUT_MS);
-    try {
-      const imageBase64 = await blobToDataUrl(stored.blob);
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageBase64, meal: meta.meal, date: meta.date }),
-        signal: controller.signal
-      });
-      httpStatus = response.status;
-      const responseText = await response.text();
-      let responseBody;
-      try {
-        responseBody = JSON.parse(responseText);
-      } catch (error) {
-        console.error("Meal analysis returned invalid JSON", { status: response.status, error });
-        return finish({ status: "invalidJson", message: "Réponse JSON invalide ou inexploitable." }, "response_not_json");
-      }
-      if (!response.ok) return finish(this.errorFromResponse(response, responseBody), responseBody?.code || responseBody?.error || `http_${response.status}`);
-      let payload;
-      try {
-        payload = validatePhotoAnalysisPayload(responseBody);
-      } catch (error) {
-        console.error("Meal analysis payload validation failed", error);
-        return finish({ status: "invalidJson", message: "Réponse JSON invalide ou inexploitable." }, error.message);
-      }
-      if (!payload.foods.length) return finish({ status: "empty", message: payload.analysisWarnings[0] || "Aucun aliment détecté.", payload }, "no_food_detected");
-      return finish({ status: "ok", payload, demo: false }, "success");
-    } catch (error) {
-      console.error("Meal analysis network failure", error);
-      if (controller.signal.aborted) return finish({ status: "timeout", message: "L’analyse a dépassé le délai autorisé. Réessaie." }, "request_timeout_or_cancelled");
-      return finish({ status: "network", message: "Connexion au service d’analyse impossible." }, error?.message || "network_error");
-    } finally {
-      clearTimeout(timeout);
-      if (this.controller === controller) this.controller = null;
-    }
-  },
-  errorFromResponse(response, body) {
-    const code = body?.code || body?.error || "unknown_error";
-    console.error("Meal analysis backend error", { status: response.status, code, body });
-    if (response.status === 413) return { status: "tooLarge", message: "Image trop volumineuse pour le service d’analyse." };
-    if (code === "missing_api_key") return { status: "missingApiKey", message: "Clé API absente côté backend. Configure OPENAI_API_KEY dans les secrets Supabase." };
-    if (response.status === 429 || code === "ai_quota_exceeded") return { status: "quota", message: "Quota du service IA atteint. Réessaie plus tard." };
-    if (response.status === 504 || code === "ai_timeout") return { status: "timeout", message: "Le service IA a mis trop de temps à répondre." };
-    if (response.status === 401 || response.status === 403) return { status: "backendAuth", message: "Backend configuré, mais accès refusé. Vérifie les origines autorisées et les secrets." };
-    if (response.status === 422 || code === "invalid_model_json") return { status: "invalidJson", message: "Réponse JSON invalide ou inexploitable." };
-    if (response.status >= 500) return { status: "unavailable", message: "Service IA indisponible. Réessaie plus tard." };
-    return { status: "network", message: "Erreur réseau pendant l’analyse." };
+async function copyAiPrompt() {
+  if (!navigator.clipboard?.writeText) return false;
+  try {
+    await navigator.clipboard.writeText(MASS_PLUS_AI_PROMPT);
+    return true;
+  } catch (error) {
+    console.info("Prompt clipboard copy unavailable", error?.name || "clipboard_error");
+    return false;
   }
-};
+}
 
-function validatePhotoAnalysisPayload(raw) {
-  const data = raw?.analysis && typeof raw.analysis === "object" ? raw.analysis : raw;
-  if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Invalid analysis payload");
-  if (!Array.isArray(data.foods)) throw new Error("Invalid foods list");
-  const foods = data.foods.slice(0, 16).map((food) => {
-    if (!food || typeof food !== "object" || Array.isArray(food)) throw new Error("Invalid food item");
-    const name = String(food.name || "").trim();
-    const estimatedGrams = nullableNumber(food.estimatedQuantityGrams);
-    let confidence = Number(food.confidence);
-    if (!name || estimatedGrams <= 0) throw new Error("Invalid food identity");
-    if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) throw new Error("Invalid confidence");
-    return {
-      name,
-      estimatedGrams: Math.round(estimatedGrams),
-      estimatedCalories: nonNegativeNumber(food.estimatedCalories),
-      estimatedProteinGrams: nonNegativeNumber(food.estimatedProteinGrams),
-      estimatedCarbohydrateGrams: nonNegativeNumber(food.estimatedCarbohydrateGrams),
-      estimatedFatGrams: nonNegativeNumber(food.estimatedFatGrams),
-      confidence: +confidence.toFixed(2),
-      needsConfirmation: food.needsConfirmation !== false
-    };
+async function sharePhotoWithAi(photoId) {
+  const meta = state.photos.find((photo) => photo.id === photoId);
+  if (!meta) return;
+  const stored = await idbGet(photoId).catch((error) => {
+    console.error("Shared photo lookup failed", error);
+    return null;
   });
+  if (!stored?.blob) {
+    toast("Photo locale introuvable.");
+    return;
+  }
+  if (stored.blob.size > 10_000_000) {
+    toast("Cette image est trop volumineuse pour le partage.");
+    return;
+  }
+
+  const file = new File([stored.blob], `repas-mass-plus-${meta.date || today()}.jpg`, { type: stored.blob.type || "image/jpeg" });
+  const shareData = { title: "Photo repas Mass+", text: MASS_PLUS_AI_PROMPT, files: [file] };
+  const clipboardPromise = copyAiPrompt();
+  const fileShareSupported = canNativeShareFile(file);
+  if (!fileShareSupported) {
+    const copied = await clipboardPromise;
+    renderShareFallback(meta, copied);
+    return;
+  }
+
+  try {
+    await navigator.share(shareData);
+    const copied = await clipboardPromise;
+    toast(copied ? "Photo partagée. Copiez la réponse de votre IA puis revenez dans Mass+." : "Photo partagée. Le prompt est disponible dans Mass+ si vous devez le copier.");
+  } catch (error) {
+    await clipboardPromise;
+    if (error?.name === "AbortError") {
+      toast("Partage annulé.");
+      return;
+    }
+    console.info("Native photo share unavailable", { name: error?.name, message: error?.message });
+    renderShareFallback(meta, false);
+  }
+}
+
+function canNativeShareFile(file) {
+  if (!navigator.share) return false;
+  try {
+    return !navigator.canShare || navigator.canShare({ files: [file] });
+  } catch {
+    return false;
+  }
+}
+
+function renderShareFallback(meta, copied) {
+  const panel = $("#photoAnalysisPanel");
+  if (!panel) return;
+  panel.innerHTML = `<article class="card analysis-card share-fallback">
+    <div class="section-head"><h2>Partage indisponible</h2><button class="ghost-inline" id="closeShareFallback" type="button">Fermer</button></div>
+    <p class="small">La feuille de partage de ce navigateur ne permet pas d’envoyer la photo. Vous pouvez copier le prompt puis partager la photo depuis l’app Photos.</p>
+    <label>Prompt d’analyse<textarea id="sharePromptFallback" readonly></textarea></label>
+    <p class="small" id="shareFallbackStatus">${copied ? "Prompt déjà copié." : "Sélectionnez le prompt si la copie automatique est refusée."}</p>
+    <div class="inline-actions"><button class="primary-button" id="copyPromptFallback" type="button">Copier le prompt</button><button class="secondary-button" id="openImportFallback" type="button">Coller la réponse IA</button></div>
+  </article>`;
+  $("#sharePromptFallback").value = MASS_PLUS_AI_PROMPT;
+  $("#closeShareFallback").addEventListener("click", () => { panel.innerHTML = ""; });
+  $("#copyPromptFallback").addEventListener("click", async () => {
+    const success = await copyAiPrompt();
+    $("#shareFallbackStatus").textContent = success ? "Prompt copié." : "Copie refusée. Sélectionnez le texte et copiez-le manuellement.";
+    if (!success) $("#sharePromptFallback").select();
+  });
+  $("#openImportFallback").addEventListener("click", () => openAiImportModal(meta.id));
+  panel.scrollIntoView({ block: "start", behavior: "smooth" });
+}
+
+function openAiImportModal(photoId) {
+  closeAiImportModal();
+  const meta = state.photos.find((photo) => photo.id === photoId);
+  if (!meta) return;
+  const overlay = document.createElement("div");
+  overlay.id = "aiImportModal";
+  overlay.className = "ai-import-overlay";
+  overlay.innerHTML = `<div class="ai-import-modal" role="dialog" aria-modal="true" aria-labelledby="aiImportTitle">
+    <div class="section-head"><h2 id="aiImportTitle">Coller l’analyse de votre IA</h2><button class="sheet-close" type="button" aria-label="Fermer" data-close-ai-import>×</button></div>
+    <p class="small">Copiez toute la réponse de ChatGPT, Gemini ou d’une autre IA, puis collez-la ici.</p>
+    <label for="aiResponseText">Réponse complète</label>
+    <textarea id="aiResponseText" placeholder="Collez ici toute la réponse de votre IA…" spellcheck="false"></textarea>
+    <p class="import-status" id="aiImportStatus" role="status"></p>
+    <div class="modal-actions"><button class="secondary-button" id="pasteAiClipboard" type="button">Coller depuis le presse-papiers</button><button class="primary-button" id="importAiResponse" type="button">Importer l’analyse</button><button class="secondary-button" data-close-ai-import type="button">Annuler</button></div>
+  </div>`;
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add("visible"));
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay || event.target.closest("[data-close-ai-import]")) closeAiImportModal();
+  });
+  overlay.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeAiImportModal();
+  });
+  $("#pasteAiClipboard").addEventListener("click", pasteAiClipboard);
+  $("#importAiResponse").addEventListener("click", () => importAiResponse(meta));
+  setTimeout(() => $("#aiResponseText")?.focus(), 80);
+}
+
+function closeAiImportModal() {
+  const modal = $("#aiImportModal");
+  if (!modal) return;
+  modal.classList.remove("visible");
+  setTimeout(() => modal.remove(), 160);
+}
+
+async function pasteAiClipboard() {
+  const status = $("#aiImportStatus");
+  if (!navigator.clipboard?.readText) {
+    status.textContent = "Lecture du presse-papiers indisponible. Collez manuellement dans le champ.";
+    return;
+  }
+  try {
+    $("#aiResponseText").value = await navigator.clipboard.readText();
+    status.textContent = "Réponse collée. Vérifiez-la puis importez.";
+  } catch (error) {
+    console.info("Clipboard read unavailable", error?.name || "clipboard_error");
+    status.textContent = "Accès au presse-papiers refusé. Collez manuellement dans le champ.";
+  }
+}
+
+function importAiResponse(meta) {
+  const status = $("#aiImportStatus");
+  try {
+    const payload = parseAiResponseText($("#aiResponseText").value);
+    photoAnalysisDraft = buildImportedMealDraft(meta, payload);
+    closeAiImportModal();
+    setTimeout(renderPhotoAnalysisDraft, 180);
+  } catch (error) {
+    console.info("AI response import rejected", error.message);
+    status.textContent = error.message || "Réponse JSON invalide.";
+  }
+}
+
+function parseAiResponseText(input) {
+  const text = String(input || "").replace(/^\uFEFF/, "").trim();
+  if (!text) throw new Error("Collez d’abord la réponse complète de votre IA.");
+  if (text.length > 100_000) throw new Error("Cette réponse est trop longue pour être importée.");
+  const cleaned = text.replace(/```(?:json)?/gi, "").replace(/```/g, "").trim();
+  const candidates = jsonObjectCandidates(cleaned);
+  for (const candidate of candidates) {
+    let parsed;
+    try {
+      parsed = JSON.parse(candidate);
+    } catch {
+      // Continue until a valid JSON object containing foods is found.
+      continue;
+    }
+    if (parsed && typeof parsed === "object" && Array.isArray(parsed.foods)) return normalizeImportedMeal(parsed);
+  }
+  throw new Error("JSON invalide. Copiez toute la réponse, y compris les accolades.");
+}
+
+function jsonObjectCandidates(text) {
+  const candidates = [];
+  for (let start = 0; start < text.length; start += 1) {
+    if (text[start] !== "{") continue;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < text.length; index += 1) {
+      const char = text[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (char === "\\") escaped = true;
+        else if (char === '"') inString = false;
+        continue;
+      }
+      if (char === '"') inString = true;
+      else if (char === "{") depth += 1;
+      else if (char === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          candidates.push(text.slice(start, index + 1));
+          start = index;
+          break;
+        }
+      }
+    }
+  }
+  return candidates;
+}
+
+function normalizeImportedMeal(raw) {
+  const foods = raw.foods.slice(0, 24).map((food, index) => normalizeImportedFood(food, index));
+  const uncertainties = Array.isArray(raw.uncertainties)
+    ? raw.uncertainties.map((item) => String(item || "").trim()).filter(Boolean).join(" · ")
+    : String(raw.uncertainties || "").trim();
   return {
-    mealTitle: String(data.mealTitle || (foods.length ? "Repas analysé" : "Aucun aliment détecté")).trim(),
+    mealName: String(raw.mealName || "Repas importé").trim().slice(0, 120) || "Repas importé",
     foods,
-    analysisWarnings: arrayOfStrings(data.analysisWarnings || [])
+    uncertainties: uncertainties.slice(0, 1000)
   };
 }
 
-function nullableNumber(value) {
-  const number = Number(value || 0);
-  return Number.isFinite(number) && number > 0 ? number : 0;
+function normalizeImportedFood(food, index) {
+  if (!food || typeof food !== "object" || Array.isArray(food)) throw new Error(`Aliment ${index + 1} invalide.`);
+  const name = String(food.name || "").trim().slice(0, 120);
+  const quantityLabel = String(food.quantity ?? "").trim().slice(0, 60);
+  if (!name) throw new Error(`Nom manquant pour l’aliment ${index + 1}.`);
+  if (!quantityLabel) throw new Error(`Quantité manquante pour ${name}.`);
+  return {
+    name,
+    quantityLabel,
+    grams: quantityToGrams(quantityLabel, name),
+    kcal: parseNutritionNumber(food.calories, "calories", name),
+    protein: parseNutritionNumber(food.protein, "protéines", name),
+    carbs: parseNutritionNumber(food.carbohydrates, "glucides", name),
+    fat: parseNutritionNumber(food.fat, "lipides", name)
+  };
 }
 
-function nonNegativeNumber(value) {
-  const number = Number(value);
-  return Number.isFinite(number) && number >= 0 ? +number.toFixed(1) : 0;
-}
-
-function arrayOfStrings(value) {
-  return Array.isArray(value) ? value.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 12) : [];
-}
-
-function cancelPhotoAnalysisPanel() {
-  photoAnalysisRunToken += 1;
-  photoAnalysisRunning = false;
-  PhotoAnalysisService.cancel();
-  const panel = $("#photoAnalysisPanel");
-  if (panel) panel.innerHTML = "";
-  photoAnalysisDraft = null;
-}
-
-async function startPhotoAnalysis(photoId) {
-  if (photoAnalysisRunning) {
-    toast("Une analyse est déjà en cours.");
-    return;
+function parseNutritionNumber(value, field, foodName) {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) return +value.toFixed(1);
+  if (typeof value === "string") {
+    const normalized = value.trim().replace(",", ".");
+    if (/^\d+(?:\.\d+)?$/.test(normalized)) return +Number(normalized).toFixed(1);
   }
-  const meta = state.photos.find((photo) => photo.id === photoId);
-  if (!meta) return;
-  const runToken = ++photoAnalysisRunToken;
-  photoAnalysisRunning = true;
-  photoAnalysisDiagnostic = null;
-  selectedMeal = meta.meal;
-  selectedDate = meta.date || today();
-  renderPhotoAnalysisState(meta, "loading");
-  try {
-    const result = await PhotoAnalysisService.analyze(meta);
-    if (runToken !== photoAnalysisRunToken) return;
-    photoAnalysisDiagnostic = result.diagnostic || null;
-    if (result.status !== "ok") {
-      renderPhotoAnalysisState(meta, result.status, result.message);
-      return;
-    }
-    photoAnalysisDraft = buildPhotoAnalysisDraft(meta, result.payload);
-    renderPhotoAnalysisDraft();
-  } finally {
-    if (runToken === photoAnalysisRunToken) photoAnalysisRunning = false;
-  }
+  throw new Error(`${field} manquantes ou invalides pour ${foodName}.`);
 }
 
-function buildPhotoAnalysisDraft(meta, payload) {
+function quantityToGrams(quantity, foodName = "") {
+  const value = normalizeSearch(quantity).replace(",", ".");
+  const match = value.match(/(\d+(?:\.\d+)?)\s*(kg|g|ml|cl|l)\b/);
+  if (match) {
+    const amount = Number(match[1]);
+    return Math.round(amount * ({ kg: 1000, g: 1, ml: 1, cl: 10, l: 1000 }[match[2]] || 1));
+  }
+  if (/^\d+(?:\.\d+)?$/.test(value)) return Math.round(Number(value));
+  const unitMatch = value.match(/(\d+(?:\.\d+)?)\s*(?:unite|unites|piece|pieces|tranche|tranches)/);
+  const matchedFood = unitMatch ? bestFoodMatch(foodName) : null;
+  return unitMatch && matchedFood ? Math.round(Number(unitMatch[1]) * defaultPortion(matchedFood)) : 0;
+}
+
+function buildImportedMealDraft(meta, payload) {
+  const quantityWarnings = payload.foods.filter((food) => !food.grams).map((food) => `Quantité en grammes à confirmer pour ${food.name}.`);
   return {
     id: id(),
     photoId: meta.id,
     meal: meta.meal,
     date: meta.date || today(),
-    demo: false,
-    mealTitle: payload.mealTitle || "Repas analysé",
-    analysisWarnings: payload.analysisWarnings || [],
-    items: payload.foods.map((food) => ({
-      id: id(),
-      name: food.name,
-      detectedName: food.name,
-      grams: food.estimatedGrams,
-      kcal: food.estimatedCalories,
-      protein: food.estimatedProteinGrams,
-      carbs: food.estimatedCarbohydrateGrams,
-      fat: food.estimatedFatGrams,
-      needsConfirmation: food.needsConfirmation,
-      matchedFoodId: bestFoodMatch(food.name)?.id || "",
-      confidence: food.confidence,
-      source: "Analyse IA à confirmer"
-    }))
+    mealTitle: payload.mealName,
+    analysisWarnings: [...(payload.uncertainties ? [payload.uncertainties] : []), ...quantityWarnings],
+    source: "Réponse IA importée",
+    items: payload.foods.map((food) => ({ id: id(), ...food, source: "Réponse IA importée" }))
   };
+}
+
+function emptyMealItem() {
+  return { id: id(), name: "", quantityLabel: "100 g", grams: 100, kcal: 0, protein: 0, carbs: 0, fat: 0, source: "Saisie manuelle" };
+}
+
+function startManualPhotoEntry(photoId) {
+  const meta = state.photos.find((photo) => photo.id === photoId);
+  if (!meta) return;
+  photoAnalysisDraft = {
+    id: id(), photoId: meta.id, meal: meta.meal, date: meta.date || today(), mealTitle: "Repas saisi manuellement", analysisWarnings: [], source: "Saisie manuelle", items: [emptyMealItem()]
+  };
+  renderPhotoAnalysisDraft();
 }
 
 function bestFoodMatch(name) {
@@ -2400,57 +2501,25 @@ function bestFoodMatch(name) {
   return exact || hasSharedSpecificToken ? first : null;
 }
 
-function renderPhotoAnalysisState(meta, status, message = "") {
+function cancelPhotoAnalysisPanel() {
   const panel = $("#photoAnalysisPanel");
-  if (!panel) return;
-  const statusText = {
-    loading: "Analyse en cours…",
-    offline: "Analyse disponible avec une connexion internet.",
-    notConfigured: PHOTO_ANALYSIS_NOT_CONFIGURED,
-    missingApiKey: "Clé API absente côté backend. Configure OPENAI_API_KEY dans les secrets Supabase.",
-    backendAuth: "Backend configuré, mais accès refusé.",
-    tooLarge: "Image trop volumineuse.",
-    invalidJson: "Réponse JSON invalide ou inexploitable.",
-    unavailable: "Service IA indisponible.",
-    quota: "Quota du service IA atteint.",
-    timeout: "Le service d’analyse a mis trop de temps à répondre.",
-    network: "Erreur réseau pendant l’analyse.",
-    empty: "Aucun aliment détecté.",
-    error: "Analyse impossible."
-  }[status] || "Analyse impossible.";
-  panel.innerHTML = `<article class="card analysis-card">
-    <div class="section-head"><h2>Analyse du repas</h2><button class="ghost-inline" id="closeAnalysis" type="button">Fermer</button></div>
-    <p class="small" aria-live="polite">${esc(message || statusText)}</p>
-    ${status === "loading" ? `<div class="analysis-loading" aria-hidden="true"></div>` : ""}
-    ${photoAnalysisDiagnosticMarkup()}
-    ${status !== "loading" ? `<div class="inline-actions"><button class="primary-button compact" id="retryAnalysis" type="button">Relancer l’analyse</button><button class="secondary-button compact" id="manualAnalysisEntry" type="button">Saisie manuelle</button></div>` : ""}
-  </article>`;
-  $("#closeAnalysis")?.addEventListener("click", cancelPhotoAnalysisPanel);
-  $("#retryAnalysis")?.addEventListener("click", () => startPhotoAnalysis(meta.id));
-  $("#manualAnalysisEntry")?.addEventListener("click", () => { selectedMeal = meta.meal; selectedDate = meta.date || today(); go("journal"); });
-  panel.scrollIntoView({ block: "start", behavior: "smooth" });
+  if (panel) panel.innerHTML = "";
+  photoAnalysisDraft = null;
 }
 
 function renderPhotoAnalysisDraft() {
   const panel = $("#photoAnalysisPanel");
   if (!panel || !photoAnalysisDraft) return;
-  const options = allFoods().slice(0, 120).map((food) => `<option value="${esc(food.name)}"></option>`).join("");
   panel.innerHTML = `<article class="card analysis-card">
-    <div class="section-head"><h2>Confirmer le repas</h2><button class="ghost-inline" id="closeAnalysis" type="button">Fermer</button></div>
-    <div id="analysisPhotoPreview" class="analysis-photo-preview"><span>Photo analysée</span></div>
+    <div class="section-head"><h2>Vérifier le repas</h2><button class="ghost-inline" id="closeAnalysis" type="button">Fermer</button></div>
+    <div id="analysisPhotoPreview" class="analysis-photo-preview"><span>Photo enregistrée</span></div>
     <p class="notice analysis-notice">${esc(PHOTO_ANALYSIS_DISCLAIMER)}</p>
-    <p class="small"><strong>${esc(photoAnalysisDraft.mealTitle)}</strong></p>
-    <datalist id="analysisFoodOptions">${options}</datalist>
-    <div class="stack analysis-list">${photoAnalysisDraft.items.map(analysisItemRow).join("") || `<p class="small">Aucun aliment à confirmer.</p>`}</div>
-    ${photoAnalysisDraft.analysisWarnings.length ? `<div class="analysis-warnings">${photoAnalysisDraft.analysisWarnings.map((warning) => `<p class="small">${esc(warning)}</p>`).join("")}</div>` : ""}
-    <div class="analysis-add">
-      <label>Aliment manquant<input id="analysisAddName" list="analysisFoodOptions" placeholder="ex. huile d’olive"></label>
-      <label>Grammes<input id="analysisAddGrams" inputmode="numeric" value="50"></label>
-      <button class="secondary-button compact" id="analysisAddFood" type="button">Ajouter un aliment</button>
-    </div>
+    <p class="small"><strong>${esc(photoAnalysisDraft.mealTitle)}</strong> · ${esc(photoAnalysisDraft.source)}</p>
+    <div class="stack analysis-list">${photoAnalysisDraft.items.map(analysisItemRow).join("") || `<p class="small">Aucun aliment. Ajoutez une ligne pour continuer.</p>`}</div>
+    ${photoAnalysisDraft.analysisWarnings.length ? `<div class="analysis-warnings">${photoAnalysisDraft.analysisWarnings.map((warning) => `<p class="small">À confirmer : ${esc(warning)}</p>`).join("")}</div>` : ""}
+    <button class="secondary-button wide analysis-add-row" id="analysisAddFood" type="button">Ajouter un aliment</button>
     <div class="analysis-totals" id="analysisTotals">${analysisTotalsMarkup()}</div>
-    ${photoAnalysisDiagnosticMarkup()}
-    <div class="inline-actions">
+    <div class="inline-actions analysis-final-actions">
       <button class="secondary-button compact" id="focusCorrection" type="button">Corriger</button>
       <button class="secondary-button compact" id="cancelPhotoAnalysis" type="button">Annuler</button>
       <button class="primary-button" id="confirmPhotoMeal" type="button">Confirmer et ajouter au journal</button>
@@ -2463,16 +2532,17 @@ function renderPhotoAnalysisDraft() {
 
 function analysisItemRow(item) {
   const macros = analysisItemMacros(item);
+  const received = item.quantityLabel && item.quantityLabel !== `${item.grams} g` ? ` · réponse : ${item.quantityLabel}` : "";
   return `<div class="analysis-row" data-analysis-row="${esc(item.id)}">
-    <label>Aliment<input value="${esc(item.name)}" list="analysisFoodOptions" data-analysis-name="${esc(item.id)}"></label>
-    <label>Quantité (g)<input value="${esc(item.grams)}" type="number" min="1" step="1" data-analysis-field="grams" data-analysis-id="${esc(item.id)}"></label>
+    <label>Aliment<input value="${esc(item.name)}" placeholder="Nom de l’aliment" data-analysis-name="${esc(item.id)}"></label>
+    <label>Quantité (g)<input value="${esc(item.grams || "")}" type="number" inputmode="decimal" min="1" step="1" placeholder="100" data-analysis-field="grams" data-analysis-id="${esc(item.id)}"></label>
     <div class="analysis-nutrition-grid">
-      <label>Calories<input value="${esc(macros.kcal)}" type="number" min="0" step="1" data-analysis-field="kcal" data-analysis-id="${esc(item.id)}"></label>
-      <label>Protéines (g)<input value="${esc(macros.protein)}" type="number" min="0" step="0.1" data-analysis-field="protein" data-analysis-id="${esc(item.id)}"></label>
-      <label>Glucides (g)<input value="${esc(macros.carbs)}" type="number" min="0" step="0.1" data-analysis-field="carbs" data-analysis-id="${esc(item.id)}"></label>
-      <label>Lipides (g)<input value="${esc(macros.fat)}" type="number" min="0" step="0.1" data-analysis-field="fat" data-analysis-id="${esc(item.id)}"></label>
+      <label>Calories<input value="${esc(macros.kcal)}" type="number" inputmode="decimal" min="0" step="1" data-analysis-field="kcal" data-analysis-id="${esc(item.id)}"></label>
+      <label>Protéines (g)<input value="${esc(macros.protein)}" type="number" inputmode="decimal" min="0" step="0.1" data-analysis-field="protein" data-analysis-id="${esc(item.id)}"></label>
+      <label>Glucides (g)<input value="${esc(macros.carbs)}" type="number" inputmode="decimal" min="0" step="0.1" data-analysis-field="carbs" data-analysis-id="${esc(item.id)}"></label>
+      <label>Lipides (g)<input value="${esc(macros.fat)}" type="number" inputmode="decimal" min="0" step="0.1" data-analysis-field="fat" data-analysis-id="${esc(item.id)}"></label>
     </div>
-    <p class="analysis-confidence">Confiance ${fmt(item.confidence * 100)} % · ${esc(item.source)}</p>
+    <p class="analysis-confidence">${esc(item.source || photoAnalysisDraft.source)}${esc(received)}</p>
     <button class="danger-button compact" data-analysis-delete="${esc(item.id)}" type="button">Supprimer</button>
   </div>`;
 }
@@ -2482,7 +2552,10 @@ function bindPhotoAnalysisDraft() {
   $("#cancelPhotoAnalysis")?.addEventListener("click", cancelPhotoAnalysisPanel);
   $("#confirmPhotoMeal")?.addEventListener("click", confirmPhotoAnalysis);
   $("#focusCorrection")?.addEventListener("click", () => $('[data-analysis-name]')?.focus());
-  $("#analysisAddFood")?.addEventListener("click", addAnalysisFoodRow);
+  $("#analysisAddFood")?.addEventListener("click", () => {
+    photoAnalysisDraft.items.push(emptyMealItem());
+    renderPhotoAnalysisDraft();
+  });
   $$('[data-analysis-delete]').forEach((button) => button.addEventListener("click", () => {
     photoAnalysisDraft.items = photoAnalysisDraft.items.filter((item) => item.id !== button.dataset.analysisDelete);
     renderPhotoAnalysisDraft();
@@ -2499,14 +2572,13 @@ async function renderAnalysisPhotoPreview(photoId) {
   const stored = await idbGet(photoId).catch(() => null);
   if (!stored?.blob) return;
   const url = URL.createObjectURL(stored.blob);
-  node.innerHTML = `<img src="${url}" alt="Photo analysée">`;
+  node.innerHTML = `<img src="${url}" alt="Photo enregistrée">`;
 }
 
 function updateAnalysisItem(itemId, patch) {
   const item = photoAnalysisDraft?.items.find((entry) => entry.id === itemId);
   if (!item) return;
   Object.assign(item, patch);
-  if (Object.prototype.hasOwnProperty.call(patch, "name")) item.matchedFoodId = bestFoodMatch(item.name)?.id || "";
   refreshAnalysisDraftDisplay();
 }
 
@@ -2523,37 +2595,11 @@ function refreshAnalysisDraftDisplay() {
   if (totalsNode) totalsNode.innerHTML = analysisTotalsMarkup();
 }
 
-function addAnalysisFoodRow() {
-  const name = $("#analysisAddName").value.trim();
-  const grams = Number($("#analysisAddGrams").value || 0);
-  if (!name || !grams) {
-    toast("Ajoute un nom et une quantité.");
-    return;
-  }
-  const match = bestFoodMatch(name);
-  const macros = match ? calc(match, grams) : { kcal: 0, protein: 0, carbs: 0, fat: 0 };
-  photoAnalysisDraft.items.push({
-    id: id(),
-    name: match?.name || name,
-    detectedName: name,
-    grams,
-    matchedFoodId: match?.id || "",
-    confidence: match ? 1 : 0,
-    kcal: macros.kcal,
-    protein: macros.protein,
-    carbs: macros.carbs,
-    fat: macros.fat,
-    needsConfirmation: true,
-    source: match ? `Base Mass+ : ${match.name}` : "Ajout manuel"
-  });
-  renderPhotoAnalysisDraft();
-}
-
 function analysisItemMacros(item) {
   const grams = Math.max(0, Number(item.grams || 0));
   const values = [item.kcal, item.protein, item.carbs, item.fat].map(Number);
   const usable = Boolean(item.name?.trim()) && grams > 0 && values.every((value) => Number.isFinite(value) && value >= 0);
-  return { kcal: values[0] || 0, protein: values[1] || 0, carbs: values[2] || 0, fat: values[3] || 0, usable, food: null };
+  return { kcal: values[0] || 0, protein: values[1] || 0, carbs: values[2] || 0, fat: values[3] || 0, usable };
 }
 
 function photoAnalysisTotals() {
@@ -2568,9 +2614,9 @@ function foodFromAnalysisItem(item) {
   const macros = analysisItemMacros(item);
   const grams = Math.max(1, Number(item.grams || 100));
   return {
-    id: `analysis-${photoAnalysisDraft.id}-${item.id}`,
-    name: item.name || "Aliment estimé",
-    source: "Estimation photo confirmée",
+    id: `photo-import-${photoAnalysisDraft.id}-${item.id}`,
+    name: item.name || "Aliment confirmé",
+    source: "Analyse externe confirmée",
     kcalPer100g: macros.kcal / grams * 100,
     proteinPer100g: macros.protein / grams * 100,
     carbsPer100g: macros.carbs / grams * 100,
@@ -2582,12 +2628,12 @@ function foodFromAnalysisItem(item) {
 
 function confirmPhotoAnalysis() {
   if (!photoAnalysisDraft?.items.length) {
-    toast("Aucun aliment à ajouter.");
+    toast("Ajoutez au moins un aliment.");
     return;
   }
   const incomplete = photoAnalysisDraft.items.filter((item) => !analysisItemMacros(item).usable);
   if (incomplete.length) {
-    toast("Vérifie les noms, quantités et valeurs nutritionnelles avant confirmation.");
+    toast("Vérifiez les noms, quantités et valeurs nutritionnelles.");
     return;
   }
   selectedDate = photoAnalysisDraft.date;
@@ -2597,7 +2643,7 @@ function confirmPhotoAnalysis() {
       photoId: photoAnalysisDraft.photoId,
       photoMealId: photoAnalysisDraft.id,
       analysisId: photoAnalysisDraft.id,
-      confidence: item.confidence,
+      confidence: 0,
       analysisDemo: false
     });
   });
@@ -2609,7 +2655,7 @@ function confirmPhotoAnalysis() {
     meta.analysisTotals = totals;
     meta.analysisFoods = photoAnalysisDraft.items.map((item) => {
       const macros = analysisItemMacros(item);
-      return { name: item.name, grams: Number(item.grams), confidence: item.confidence, kcal: macros.kcal, protein: macros.protein, carbs: macros.carbs, fat: macros.fat };
+      return { name: item.name, grams: Number(item.grams), kcal: macros.kcal, protein: macros.protein, carbs: macros.carbs, fat: macros.fat };
     });
   }
   saveState();

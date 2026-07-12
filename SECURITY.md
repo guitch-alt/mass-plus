@@ -2,50 +2,29 @@
 
 ## Données locales
 
-Mass+ stocke les données dans IndexedDB sur l’appareil :
+Mass+ stocke dans IndexedDB le profil, le journal, les poids, les favoris, les aliments personnels, le cache Open Food Facts et les photos. Une copie de secours de l’état applicatif reste dans `localStorage` pour préserver les anciennes installations.
 
-- profil local ;
-- journal alimentaire ;
-- poids ;
-- eau ;
-- produits sauvegardés ;
-- collations personnalisées ;
-- recettes favorites ;
-- photos avant/après associées aux repas.
-
-`localStorage` ne stocke qu’une préférence simple : le dernier écran ouvert.
-
-## Pas de compte
-
-Mass+ ne demande pas :
-
-- email ;
-- mot de passe ;
-- inscription ;
-- authentification distante ;
-- compte Supabase.
+L’application ne demande ni compte, ni email, ni mot de passe, ni moyen de paiement.
 
 ## Réseau
 
-L’application fonctionne sans réseau après le premier chargement. La V1 mobile ne dépend d’aucune API externe pour la recherche alimentaire, les favoris, les photos ou le journal.
+Les fonctions locales restent utilisables hors ligne après le premier chargement.
 
-Une recherche en ligne de type Open Food Facts peut être ajoutée plus tard comme option secondaire, mais elle ne doit pas devenir obligatoire pour utiliser Mass+.
+- Open Food Facts est contacté uniquement après une recherche en ligne ou un scan demandé par l’utilisateur.
+- Mass+ n’appelle aucune API d’IA.
+- Une photo n’est partagée qu’après l’action **Partager à mon IA**, via la feuille de partage native et vers l’application choisie par l’utilisateur.
 
-## Photo
+## Import de réponse IA
 
-Les photos de repas sont utilisées localement dans le navigateur pour aider l’utilisateur à composer le repas. Aucune photo n’est envoyée à un serveur par Mass+.
+La réponse collée est limitée en taille, extraite comme texte puis analysée avec `JSON.parse`. Mass+ n’utilise ni `eval`, ni exécution de script, ni interprétation HTML du contenu importé. Les noms et incertitudes sont échappés avant affichage. Les totaux fournis sont ignorés et recalculés depuis les lignes alimentaires.
 
-## XSS et entrées utilisateur
+## Protection du dépôt public
 
-Les données saisies par l’utilisateur sont échappées avant affichage. Les champs libres servent au suivi personnel et ne doivent pas contenir de données médicales sensibles inutiles.
+- Les fichiers `.env` sont ignorés par Git.
+- La V1 ne nécessite aucune clé API, aucun token et aucun secret.
+- Une Content Security Policy limite les scripts, connexions et contenus externes.
+- ZXing est servi depuis le dépôt et Open Food Facts reste la seule connexion applicative externe active.
 
-## Suppression et export
+## Risques résiduels
 
-L’app contient :
-
-- un bouton **Exporter mes données** ;
-- un bouton **Supprimer toutes mes données**.
-
-## Limites
-
-Mass+ fournit des estimations nutritionnelles. L’application ne remplace pas un avis médical ou diététique. En cas de maigreur importante, symptômes persistants, perte de poids involontaire ou troubles digestifs, un suivi professionnel est recommandé.
+La sécurité dépend aussi du navigateur, du téléphone et de l’application choisie lors du partage. Le contenu partagé quitte alors Mass+ selon les règles de confidentialité de cette application. Les données locales peuvent être effacées par le navigateur ou par l’utilisateur ; l’export local reste recommandé avant une suppression de données ou un changement de téléphone.
