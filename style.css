@@ -483,3 +483,67 @@ h3 { margin-bottom: 6px; font-size: 16px; }
   .discover-card { align-items: stretch; flex-direction: column; }
   .history-row { grid-template-columns: 1fr; }
 }
+
+.quick-add-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.quick-add-line span { color: var(--muted); font-size: 12px; font-weight: 950; }
+.quick-add-line .compact { min-height: 36px; max-width: none; padding: 0 10px; }
+.coffee-adjust {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 92px auto;
+  gap: 8px;
+  align-items: end;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: #fbfcfa;
+}
+.daily-tip-card { padding: 14px 15px; }
+.daily-tip-card h2 { margin-bottom: 2px; font-size: 18px; }
+.daily-tip-card strong { display: block; margin-bottom: 4px; }
+.daily-tip-card p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.45; font-weight: 750; }
+.icon-button, .heart-button {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: var(--soft);
+  color: var(--primary);
+  font-weight: 950;
+}
+.heart-button.active { background: #ffe8ea; color: #b83147; }
+.recipe-card-head { display: grid; grid-template-columns: 72px minmax(0, 1fr) 42px; gap: 10px; align-items: center; }
+.recipe-media {
+  display: grid;
+  min-height: 72px;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #eaf4ee, #fff7ec);
+  color: var(--primary);
+  font-size: 10px;
+  font-weight: 950;
+  text-align: center;
+  padding: 8px;
+}
+.recipe-media img { width: 100%; height: 100%; object-fit: cover; }
+.recipe-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
+.recipe-controls label:not(.recipe-photo-button) { width: 92px; }
+.recipe-photo-button { display: inline-grid; place-items: center; color: var(--primary); }
+.recipe-photo-button input { display: none; }
+@media (max-width: 430px) {
+  .coffee-adjust { grid-template-columns: 1fr; }
+  .recipe-card-head { grid-template-columns: 58px minmax(0, 1fr) 40px; }
+  .recipe-media { min-height: 58px; }
+}

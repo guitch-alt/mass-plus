@@ -178,5 +178,29 @@
     "category": "confiance",
     "title": "Répète ce qui marche",
     "body": "Un repas efficace mérite de devenir un favori."
+  },
+  {
+    "id": "tip-cafe-enrichi",
+    "category": "boisson",
+    "title": "Enrichis un café ou chocolat chaud",
+    "body": "Ajoute un peu de lait entier, une dosette de crème ou un sucre selon ton objectif : c’est un petit geste facile à suivre dans le Journal."
+  },
+  {
+    "id": "tip-collation-emporter",
+    "category": "organisation",
+    "title": "Prépare une collation à emporter",
+    "body": "Une banane, une poignée d’amandes ou un skyr évitent de laisser passer un long creux sans te forcer brutalement."
+  },
+  {
+    "id": "tip-portions-progressives",
+    "category": "progression",
+    "title": "Augmente les portions progressivement",
+    "body": "Ajoute quelques cuillères de féculents ou un filet d’huile plutôt que de doubler brutalement l’assiette."
+  },
+  {
+    "id": "tip-proteines-simples",
+    "category": "protéines",
+    "title": "Ajoute une protéine simple",
+    "body": "Œuf, thon, skyr, jambon ou lentilles complètent vite un repas sans tout changer."
   }
 ]

@@ -1,6 +1,6 @@
 "use strict";
 
-const APP_VERSION = "0.4.0";
+const APP_VERSION = "0.4.2";
 const STORAGE_KEY = "mass-plus-state-v2";
 const LEGACY_KEYS = ["mass-plus-mvp-v1", "mass-plus-state"];
 const DB_NAME = "mass-plus-local";
@@ -16,8 +16,8 @@ const MEAL_TYPES = {
   autre: "snack"
 };
 const NAV = [
-  ["home", "Accueil", "⌂"],
-  ["journal", "Journal", "▦"],
+  ["home", "Journal", "⌂"],
+  ["journal", "Banque", "▦"],
   ["add", "Ajouter", "+"],
   ["recipes", "Recettes", "□"],
   ["profile", "Profil", "◎"]
@@ -32,10 +32,24 @@ const SEARCH_ALIASES = {
   "sucre en morceau": ["sucre en morceaux", "sucre blanc"],
   "morceau de sucre": ["sucre en morceaux", "sucre blanc"],
   "sucre morceaux": ["sucre en morceaux", "sucre blanc"],
+  "carre de sucre": ["sucre en morceaux", "sucre blanc"],
+  "sucre cafe": ["sucre en morceaux", "café avec un sucre", "café avec deux sucres"],
   "beurre sale": ["beurre demi sel", "beurre demi-sel"],
   "beurre demi sel": ["beurre demi-sel"],
+  "beurre demi-sel": ["beurre demi-sel"],
   baguette: ["baguette courante", "pain baguette"],
-  lait: ["lait entier", "lait demi ecreme", "lait demi-écrémé"]
+  lait: ["lait entier", "lait demi ecreme", "lait demi-écrémé"],
+  cafe: ["café noir", "café filtre", "café expresso"],
+  "tasse cafe": ["café noir", "café filtre"],
+  "tasse de cafe": ["café noir", "café filtre"],
+  "cafe noir": ["café noir", "café filtre"],
+  expresso: ["café expresso", "espresso"],
+  espresso: ["café expresso"],
+  eau: ["eau du robinet", "eau plate", "eau gazeuse"],
+  "verre eau": ["eau du robinet", "eau plate"],
+  "verre d eau": ["eau du robinet", "eau plate"],
+  "eau robinet": ["eau du robinet"],
+  "eau gazeuse": ["eau gazeuse"]
 };
 
 let baseFoods = [];
@@ -45,6 +59,7 @@ let currentScreen = "home";
 let selectedMeal = "petit déjeuner";
 let selectedDate = "";
 let recipesTab = "recipes";
+let quickCoffeePanel = false;
 let searchResults = [];
 let dbPromise = null;
 let state = emptyState();
@@ -120,6 +135,9 @@ function emptyState() {
     offFoods: [],
     offCache: {},
     recipeFavorites: [],
+    recipePhotos: {},
+    dailyTip: null,
+    hiddenTips: {},
     photos: [],
     pendingPhotoMeal: "déjeuner",
     migrations: {}
@@ -279,6 +297,9 @@ async function loadPersistentState() {
   next.offFoods = cachedProducts;
   next.offCache = settingsRecord?.offCache || {};
   next.recipeFavorites = settingsRecord?.recipeFavorites || [];
+  next.recipePhotos = settingsRecord?.recipePhotos || {};
+  next.dailyTip = settingsRecord?.dailyTip || null;
+  next.hiddenTips = settingsRecord?.hiddenTips || {};
   next.photos = photos;
   next.pendingPhotoMeal = settingsRecord?.pendingPhotoMeal || "déjeuner";
   next.migrations = settingsRecord?.migrations || {};
@@ -324,6 +345,9 @@ function migrateState(saved) {
   next.offFoods = Array.isArray(saved.offFoods) ? saved.offFoods : [];
   next.offCache = saved.offCache || {};
   next.recipeFavorites = Array.isArray(saved.recipeFavorites) ? saved.recipeFavorites : [];
+  next.recipePhotos = saved.recipePhotos && typeof saved.recipePhotos === "object" ? saved.recipePhotos : {};
+  next.dailyTip = saved.dailyTip || null;
+  next.hiddenTips = saved.hiddenTips && typeof saved.hiddenTips === "object" ? saved.hiddenTips : {};
   next.photos = Array.isArray(saved.photos) ? saved.photos : [];
   next.pendingPhotoMeal = saved.pendingPhotoMeal || "déjeuner";
   next.migrations = saved.migrations && typeof saved.migrations === "object" ? saved.migrations : {};
@@ -364,6 +388,9 @@ async function persistState() {
       version: APP_VERSION,
       offCache: state.offCache || {},
       recipeFavorites: state.recipeFavorites || [],
+      recipePhotos: state.recipePhotos || {},
+      dailyTip: state.dailyTip || null,
+      hiddenTips: state.hiddenTips || {},
       pendingPhotoMeal: state.pendingPhotoMeal || "déjeuner",
       migrations: state.migrations || {},
       updatedAt: new Date().toISOString()
@@ -459,6 +486,10 @@ function calc(item, grams) {
 
 function defaultPortion(food) {
   return Number(food?.defaultPortionG || food?.portionGrams || 100);
+}
+
+function unitLabel(foodOrEntry) {
+  return foodOrEntry?.unit || (normalizeSearch(foodOrEntry?.category).includes("boisson") ? "ml" : "g");
 }
 
 function totals(entries = dayEntries()) {
@@ -912,6 +943,39 @@ function calorieRing(value, goal) {
   </div>`;
 }
 
+function tipForDate(dateKey = today()) {
+  if (!tips.length) return null;
+  if (state.dailyTip?.date === dateKey && tips.some((tip) => tip.id === state.dailyTip.id)) return tips.find((tip) => tip.id === state.dailyTip.id);
+  const recent = Array.isArray(state.dailyTip?.recentIds) ? state.dailyTip.recentIds : [];
+  const available = tips.filter((tip) => !recent.includes(tip.id));
+  const pool = available.length ? available : tips;
+  const daySeed = Number(dateKey.replace(/-/g, ""));
+  const tip = pool[daySeed % pool.length];
+  state.dailyTip = { date: dateKey, id: tip.id, recentIds: [tip.id, ...recent.filter((id) => id !== tip.id)].slice(0, 30) };
+  saveState();
+  return tip;
+}
+
+function dailyTipCard() {
+  const dateKey = today();
+  if (state.hiddenTips?.[dateKey]) return "";
+  const tip = tipForDate(dateKey);
+  if (!tip) return "";
+  return `<article class="card daily-tip-card">
+    <div class="section-head"><h2>Astuce du jour</h2><button class="icon-button" id="hideDailyTip" type="button" aria-label="Masquer l’astuce du jour">×</button></div>
+    <strong>${esc(tip.title)}</strong>
+    <p>${esc(tip.body)}</p>
+  </article>`;
+}
+
+function bindDailyTip() {
+  $("#hideDailyTip")?.addEventListener("click", () => {
+    state.hiddenTips[today()] = true;
+    saveState();
+    renderHome();
+  });
+}
+
 function renderHome() {
   const sum = totals(dayEntries(today()));
   const goals = activeGoals();
@@ -919,7 +983,7 @@ function renderHome() {
     <article class="card hero">
       <div class="hero-top">
         <div>
-          <p class="eyebrow">Aujourd’hui</p>
+          <p class="eyebrow">Journal</p>
           <div class="big-number">${fmt(sum.kcal)} kcal</div>
           <p class="small">${fmt(sum.protein, 1)} g protéines · objectif ${goals.calories ? fmt(goals.calories) : "à calculer"} kcal</p>
         </div>
@@ -929,6 +993,7 @@ function renderHome() {
       ${progress("Protéines", sum.protein, goals.protein)}
     </article>
     ${goals.warning ? `<article class="card notice">${esc(goals.warning)}</article>` : ""}
+    ${dailyTipCard()}
     <div class="grid two">
       ${metric("Poids actuel", latestWeight() ? `${fmt(latestWeight(), 1)} kg` : "Profil à compléter")}
       ${metric("Poids cible", profileNumber("targetWeight") ? `${fmt(profileNumber("targetWeight"), 1)} kg` : "Profil à compléter")}
@@ -942,33 +1007,88 @@ function renderHome() {
     <article class="card">
       <div class="section-head"><h2>Mes favoris</h2><button class="ghost-inline" id="allFavorites" type="button">Voir tout</button></div>
       <div class="home-search">
-        <label>Rechercher un aliment<input id="homeFoodSearch" placeholder="sucre, pain, skyr..." autocomplete="off"></label>
+        <label>Rechercher un aliment<input id="homeFoodSearch" placeholder="eau, café, pain..." autocomplete="off"></label>
         <button class="secondary-button compact" id="homeSearchButton" type="button">Rechercher</button>
       </div>
       <div class="quick-grid favorites-home">${homeFavoritesMarkup()}</div>
-    </article>
-    <article class="card discover-card">
-      <div>
-        <h2>Découvrir les recettes et astuces</h2>
-        <p class="small">Recettes hypercaloriques et conseils simples restent accessibles dans leur onglet.</p>
+      <div class="quick-add-line" aria-label="Ajout rapide">
+        <span>Ajout rapide</span>
+        <button class="secondary-button compact" id="quickWater" type="button">+ Eau</button>
+        <button class="secondary-button compact" id="quickCoffee" type="button">+ Café</button>
+        <button class="secondary-button compact" id="quickSearch" type="button">Rechercher</button>
       </div>
-      <button class="ghost-inline" data-go="recipes">Ouvrir</button>
+      ${quickCoffeePanel ? coffeeAdjustMarkup() : ""}
+    </article>
+    <article class="card">
+      <h2>Repas du jour</h2>
+      <div class="stack">${MEALS.map(mealBlock).join("")}</div>
     </article>`;
+  bindDailyTip();
   $("#goAdd").addEventListener("click", () => { selectedDate = today(); selectedMeal = "petit déjeuner"; go("journal"); });
   $("#quickSnack").addEventListener("click", () => { selectedDate = today(); selectedMeal = "collation"; go("journal"); });
   $("#goWeight").addEventListener("click", () => go("weight"));
   $("#goPhoto").addEventListener("click", () => go("photo"));
   $("#allFavorites").addEventListener("click", () => { selectedMeal = "collation"; selectedDate = today(); go("journal"); setTimeout(() => $("#savedMeals")?.scrollIntoView({ block: "start", behavior: "smooth" }), 80); });
   $("#homeSearchButton").addEventListener("click", () => openHomeSearch());
+  $("#quickSearch").addEventListener("click", () => openHomeSearch());
+  $("#quickWater").addEventListener("click", () => addQuickDrink("eau-du-robinet"));
+  $("#quickCoffee").addEventListener("click", () => addQuickCoffee());
+  $("#addCoffeeExtra")?.addEventListener("click", addCoffeeExtra);
   $("#homeFoodSearch").addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
       openHomeSearch();
     }
   });
-  $$("[data-go]").forEach((button) => button.addEventListener("click", () => go(button.dataset.go)));
   bindHomeFavoriteButtons();
-  bindRecipeButtons();
+  bindEntryButtons();
+}
+
+function addQuickDrink(foodId) {
+  const food = findFood(foodId);
+  if (!food) {
+    toast("Aliment introuvable dans la Banque.");
+    return;
+  }
+  selectedDate = today();
+  selectedMeal = "collation";
+  addEntry(food, defaultPortion(food), selectedMeal, false);
+  toast(`${food.name} ajouté.`);
+  renderHome();
+}
+
+function addQuickCoffee() {
+  addQuickDrink("cafe-noir");
+  quickCoffeePanel = true;
+  renderHome();
+}
+
+function coffeeAdjustMarkup() {
+  return `<div class="coffee-adjust">
+    <label>Compléter le café<select id="coffeeExtra"><option value="">Sans supplément</option><option value="sucre-en-morceaux">1 morceau de sucre</option><option value="cafe-deux-sucres-extra">2 morceaux de sucre</option><option value="dosette-lait-entier">Dosette de lait entier</option><option value="dosette-lait-demi-ecreme">Dosette de lait demi-écrémé</option></select></label>
+    <label>Quantité<input id="coffeeExtraQty" inputmode="numeric" value="1"></label>
+    <button class="secondary-button compact" id="addCoffeeExtra" type="button">Ajouter</button>
+  </div>`;
+}
+
+function addCoffeeExtra() {
+  const selected = $("#coffeeExtra")?.value;
+  const qty = Number($("#coffeeExtraQty")?.value || 1);
+  if (!selected) {
+    quickCoffeePanel = false;
+    renderHome();
+    return;
+  }
+  if (selected === "cafe-deux-sucres-extra") {
+    const sugar = findFood("sucre-en-morceaux");
+    if (sugar) addEntry(sugar, defaultPortion(sugar) * Math.max(1, qty) * 2, "collation", false);
+  } else {
+    const food = findFood(selected);
+    if (food) addEntry(food, defaultPortion(food) * Math.max(1, qty), "collation", false);
+  }
+  quickCoffeePanel = false;
+  toast("Café complété.");
+  renderHome();
 }
 
 function homeFavoritesMarkup() {
@@ -1025,23 +1145,23 @@ function renderJournal() {
   const goals = activeGoals();
   $("#screen").innerHTML = `
     <article class="card">
-      <div class="section-head"><h2>Journal alimentaire</h2><button class="ghost-inline" id="openHistory" type="button">Historique</button></div>
-      <div class="date-nav" aria-label="Navigation par jour">
-        <button class="secondary-button compact" id="prevDay" type="button">Préc.</button>
-        <button class="secondary-button compact" id="todayDay" type="button">${selectedDate === today() ? "Aujourd’hui" : "Aujourd’hui"}</button>
-        <button class="secondary-button compact" id="nextDay" type="button">Suiv.</button>
-      </div>
-      <p class="small active-date">${esc(dateLabel(selectedDate))} · ${esc(selectedDate)}</p>
-      <div class="grid two">${metric("Calories", `${fmt(sum.kcal)} / ${fmt(goals.calories)}`)}${metric("Protéines", `${fmt(sum.protein, 1)} / ${fmt(goals.protein)} g`)}</div>
+      <div class="section-head"><h2>Banque alimentaire</h2><button class="ghost-inline" id="openHistory" type="button">Historique</button></div>
+      <p class="small active-date">Ajoute un aliment à ${esc(dateLabel(selectedDate))} · ${esc(selectedDate)}</p>
+      <div class="grid two">${metric("Calories du jour", `${fmt(sum.kcal)} / ${fmt(goals.calories)}`)}${metric("Protéines", `${fmt(sum.protein, 1)} / ${fmt(goals.protein)} g`)}</div>
     </article>
     <article class="card">
       <div class="tabs">${MEALS.map((meal) => `<button class="${meal === selectedMeal ? "active" : ""}" data-meal="${meal}">${meal}</button>`).join("")}</div>
-      ${foodSearchMarkup("journal")}
+      ${foodSearchMarkup("journal", "eau, café, pain, beurre...")}
       <details class="manual-food"><summary>Créer un aliment manuellement</summary>${manualFoodMarkup()}</details>
     </article>
     ${savedMealsSection()}
     <article class="card">
-      <h2>Repas du jour</h2>
+      <h2>Repas de la journée sélectionnée</h2>
+      <div class="date-nav" aria-label="Navigation par jour">
+        <button class="secondary-button compact" id="prevDay" type="button">Préc.</button>
+        <button class="secondary-button compact" id="todayDay" type="button">Aujourd’hui</button>
+        <button class="secondary-button compact" id="nextDay" type="button">Suiv.</button>
+      </div>
       <div class="stack">${MEALS.map(mealBlock).join("")}</div>
     </article>`;
   bindMealTabs();
@@ -1205,10 +1325,10 @@ function foodRow(food, scope) {
     <div>
       <strong>${esc(food.name)}</strong>
       <div class="macro">${esc(source)}${food.brands ? ` · ${esc(food.brands)}` : ""}</div>
-      <div class="macro">${food.incompleteNutrition ? "Informations nutritionnelles incomplètes" : `${fmt(food.kcalPer100g)} kcal / 100 g · ${fmt(food.proteinPer100g, 1)} g prot. · portion ${fmt(portion)} g`}</div>
+      <div class="macro">${food.incompleteNutrition ? "Informations nutritionnelles incomplètes" : `${fmt(food.kcalPer100g)} kcal / 100 ${esc(unitLabel(food))} · ${fmt(food.proteinPer100g, 1)} g prot. · portion ${fmt(portion)} ${esc(unitLabel(food))}`}</div>
     </div>
     <div class="food-actions">
-      <label class="unit-field"><input inputmode="numeric" value="${portion}" data-grams="${food.id}" data-scope="${scope}" aria-label="Quantité en grammes"><span>g</span></label>
+      <label class="unit-field"><input inputmode="numeric" value="${portion}" data-grams="${food.id}" data-scope="${scope}" aria-label="Quantité"><span>${esc(unitLabel(food))}</span></label>
       <button class="primary-button compact" data-add-food="${food.id}" data-scope="${scope}">Ajouter</button>
     </div>
   </div>`;
@@ -1254,7 +1374,7 @@ function addEntry(food, grams, meal, rerender = true) {
     foodName: food.name,
     name: food.name,
     quantity: Number(grams),
-    unit: food.unit || "g",
+    unit: unitLabel(food),
     grams: Number(grams),
     source: sourceLabelFromKey(source),
     createdAt: now,
@@ -1281,10 +1401,10 @@ function entryRow(entry) {
   return `<div class="entry-row">
     <div>
       <strong>${esc(entry.name)}</strong>
-      <div class="macro">${fmt(entry.grams)} g · ${fmt(entry.kcal)} kcal · ${fmt(entry.protein, 1)} g protéines</div>
+      <div class="macro">${fmt(entry.grams)} ${esc(entry.unit || "g")} · ${fmt(entry.kcal)} kcal · ${fmt(entry.protein, 1)} g protéines</div>
     </div>
     <div class="entry-actions">
-      <label class="unit-field"><input inputmode="numeric" value="${entry.grams}" data-entry-grams="${entry.id}" aria-label="Quantité ${esc(entry.name)} en grammes"><span>g</span></label>
+      <label class="unit-field"><input inputmode="numeric" value="${entry.grams}" data-entry-grams="${entry.id}" aria-label="Quantité ${esc(entry.name)}"><span>${esc(entry.unit || "g")}</span></label>
       <button class="secondary-button compact" data-edit-entry="${entry.id}">OK</button>
       <button class="danger-button compact" data-delete-entry="${entry.id}">Supprimer</button>
     </div>
@@ -1677,83 +1797,106 @@ function mergeById(current, incoming) {
 
 function filteredRecipes() {
   const exclusions = state.profile.exclusions || [];
-  return recipes.filter((recipe) => {
+  const list = recipes.filter((recipe) => {
     if (exclusions.includes("végétarien") && !recipe.tags?.includes("végétarien")) return false;
     return !exclusions.some((item) => (recipe.exclusions || []).includes(item));
   });
+  if (recipesTab === "favorites") return list.filter((recipe) => isRecipeFavorite(recipe.id));
+  return list;
+}
+
+function isRecipeFavorite(recipeId) {
+  return (state.recipeFavorites || []).includes(recipeId);
+}
+
+function toggleRecipeFavorite(recipeId) {
+  const set = new Set(state.recipeFavorites || []);
+  if (set.has(recipeId)) {
+    set.delete(recipeId);
+    toast("Recette retirée des favorites.");
+  } else {
+    set.add(recipeId);
+    toast("Recette ajoutée aux favorites.");
+  }
+  state.recipeFavorites = [...set];
+  saveState();
+  renderRecipes();
 }
 
 function renderRecipes() {
   const list = filteredRecipes();
   $("#screen").innerHTML = `<article class="card">
-    <div class="section-head"><h2>Recettes</h2><button class="ghost-inline" data-go="home">Accueil</button></div>
+    <div class="section-head"><h2>Recettes</h2><button class="ghost-inline" data-go="home">Journal</button></div>
     <div class="tabs sub-tabs">
       <button class="${recipesTab === "recipes" ? "active" : ""}" data-recipes-tab="recipes">Recettes</button>
+      <button class="${recipesTab === "favorites" ? "active" : ""}" data-recipes-tab="favorites">Mes favorites</button>
       <button class="${recipesTab === "tips" ? "active" : ""}" data-recipes-tab="tips">Astuces</button>
     </div>
-    ${recipesTab === "recipes"
-      ? `<p class="small">${list.length} recette(s) compatibles avec le profil.</p><div class="stack">${list.map(recipeCard).join("")}</div>`
-      : `<p class="small">Astuces déjà présentes dans Mass+.</p><div class="stack">${tips.map(tipCard).join("")}</div>`}
+    ${recipesTab === "tips"
+      ? `<p class="small">Astuces déjà présentes dans Mass+.</p><div class="stack">${tips.map(tipCard).join("")}</div>`
+      : `<p class="small">${list.length} recette(s) ${recipesTab === "favorites" ? "favorite(s)" : "compatibles avec le profil"}.</p><div class="stack">${list.map(recipeCard).join("") || `<p class="small">Aucune recette favorite pour le moment.</p>`}</div>`}
   </article>`;
-  $$("[data-go]").forEach((button) => button.addEventListener("click", () => go(button.dataset.go)));
-  $$("[data-recipes-tab]").forEach((button) => button.addEventListener("click", () => {
+  $$('[data-go]').forEach((button) => button.addEventListener("click", () => go(button.dataset.go)));
+  $$('[data-recipes-tab]').forEach((button) => button.addEventListener("click", () => {
     recipesTab = button.dataset.recipesTab;
     renderRecipes();
   }));
   bindRecipeButtons();
+  renderRecipePhotoThumbs();
+}
+
+function recipeImageMarkup(recipe) {
+  const label = recipe.category || recipe.type || "recette";
+  return `<div class="recipe-media" data-recipe-image="${esc(recipe.id)}" aria-label="Image ${esc(recipe.name)}"><span>${esc(label)}</span></div>`;
 }
 
 function recipeCard(recipe) {
   const duration = recipe.duration || recipe.time || "15 min";
   const difficulty = recipe.difficulty || recipe.type || recipe.category || "recette";
   const cost = recipe.cost || recipe.budget || "";
+  const favorite = isRecipeFavorite(recipe.id);
   return `<div class="recipe-card">
-    <div><strong>${esc(recipe.name)}</strong><div class="macro">${esc(duration)} · ${esc(difficulty)} ${cost ? `· ${esc(cost)} ` : ""}· ${fmt(recipe.kcal)} kcal · ${fmt(recipe.protein)} g prot.</div></div>
-    <details><summary>Voir les ingrédients</summary><ul>${(recipe.ingredients || []).map((item) => `<li>${esc(item)}</li>`).join("")}</ul><ol>${(recipe.steps || []).map((step) => `<li>${esc(step)}</li>`).join("")}</ol></details>
-    <div class="inline-actions"><button class="primary-button compact" data-recipe-journal="${recipe.id}">Ajouter au journal</button><button class="secondary-button compact" data-recipe-fav="${recipe.id}">Enregistrer comme repas</button></div>
+    <div class="recipe-card-head">${recipeImageMarkup(recipe)}<div><strong>${esc(recipe.name)}</strong><div class="macro">${esc(duration)} · ${esc(difficulty)} ${cost ? `· ${esc(cost)} ` : ""}· ${fmt(recipe.kcal)} kcal · ${fmt(recipe.protein)} g prot.</div></div><button class="heart-button ${favorite ? "active" : ""}" data-recipe-heart="${recipe.id}" type="button" aria-label="${favorite ? "Retirer des favorites" : "Ajouter aux favorites"}">♥</button></div>
+    <details><summary>Voir les ingrédients</summary>${recipeImageMarkup({ ...recipe, id: `${recipe.id}-detail`, name: recipe.name, category: "aperçu" })}<ul>${(recipe.ingredients || []).map((item) => `<li>${esc(item)}</li>`).join("")}</ul><ol>${(recipe.steps || []).map((step) => `<li>${esc(step)}</li>`).join("")}</ol></details>
+    <div class="recipe-controls"><label>Portions<input inputmode="decimal" value="1" data-recipe-portions="${recipe.id}"></label><button class="primary-button compact" data-recipe-journal="${recipe.id}">Ajouter</button><label class="secondary-button compact recipe-photo-button">Photo<input type="file" accept="image/*" data-recipe-photo="${recipe.id}"></label>${state.recipePhotos?.[recipe.id] ? `<button class="danger-button compact" data-delete-recipe-photo="${recipe.id}">Suppr. photo</button>` : ""}</div>
   </div>`;
 }
 
 function bindRecipeButtons() {
-  $$("[data-recipe-journal]").forEach((button) => button.addEventListener("click", () => addRecipeToJournal(button.dataset.recipeJournal)));
-  $$("[data-recipe-fav]").forEach((button) => button.addEventListener("click", () => addRecipeToFavorites(button.dataset.recipeFav)));
+  $$('[data-recipe-journal]').forEach((button) => button.addEventListener("click", () => addRecipeToJournal(button.dataset.recipeJournal)));
+  $$('[data-recipe-heart]').forEach((button) => button.addEventListener("click", () => toggleRecipeFavorite(button.dataset.recipeHeart)));
+  $$('[data-recipe-photo]').forEach((input) => input.addEventListener("change", saveRecipePhoto));
+  $$('[data-delete-recipe-photo]').forEach((button) => button.addEventListener("click", () => deleteRecipePhoto(button.dataset.deleteRecipePhoto)));
+}
+
+function recipePortions(recipeId) {
+  const value = Number($(`[data-recipe-portions="${recipeId}"]`)?.value || 1);
+  return Number.isFinite(value) && value > 0 ? value : 1;
 }
 
 function addRecipeToJournal(recipeId) {
   const recipe = recipes.find((item) => item.id === recipeId);
   if (!recipe) return;
+  const portions = recipePortions(recipeId);
   if (!recipe.items?.length) {
-    addEntry(recipeAsFood(recipe), 100, selectedMeal || "déjeuner", false);
+    addEntry(recipeAsFood(recipe), portions, selectedMeal || "déjeuner", false);
     saveState();
     toast("Recette ajoutée au journal.");
-    go("journal");
+    go("home");
     return;
   }
   recipe.items.forEach((item) => {
     const food = findFood(item.food);
-    if (food) addEntry(food, item.grams, recipe.meal || "déjeuner", false);
+    if (food) addEntry(food, item.grams * portions, recipe.meal || "déjeuner", false);
   });
   saveState();
   toast("Recette ajoutée au journal.");
   selectedMeal = recipe.meal || "déjeuner";
-  go("journal");
+  go("home");
 }
 
 function addRecipeToFavorites(recipeId) {
-  const recipe = recipes.find((item) => item.id === recipeId);
-  if (!recipe) return;
-  const items = recipe.items?.length ? recipe.items.map((item) => {
-    const food = findFood(item.food);
-    return { food: item.food, name: food?.name || item.food, grams: item.grams, ...calc(food || {}, item.grams) };
-  }) : [{ food: `recipe-${recipe.id}`, name: recipe.name, grams: 100, ...calc(recipeAsFood(recipe), 100) }];
-  state.favorites.unshift({
-    id: id(),
-    name: recipe.name,
-    meal: recipe.meal || "déjeuner",
-    items
-  });
-  saveState();
-  toast("Recette enregistrée comme repas.");
+  toggleRecipeFavorite(recipeId);
 }
 
 function recipeAsFood(recipe) {
@@ -1761,12 +1904,44 @@ function recipeAsFood(recipe) {
     id: `recipe-${recipe.id}`,
     name: recipe.name,
     source: "Recette",
-    kcalPer100g: Number(recipe.kcal || 0),
-    proteinPer100g: Number(recipe.protein || 0),
-    carbsPer100g: Number(recipe.carbs || 0),
-    fatPer100g: Number(recipe.fat || 0),
-    defaultPortionG: 100
+    kcalPer100g: Number(recipe.kcal || 0) * 100,
+    proteinPer100g: Number(recipe.protein || 0) * 100,
+    carbsPer100g: Number(recipe.carbs || 0) * 100,
+    fatPer100g: Number(recipe.fat || 0) * 100,
+    defaultPortionG: 1,
+    unit: "portion"
   };
+}
+
+async function saveRecipePhoto(event) {
+  const file = event.target.files?.[0];
+  const recipeId = event.target.dataset.recipePhoto;
+  if (!file || !recipeId) return;
+  const blob = await compressImage(file, "image/webp", 0.68);
+  await idbPut({ id: `recipe-photo-${recipeId}`, blob });
+  state.recipePhotos[recipeId] = { id: `recipe-photo-${recipeId}`, updatedAt: new Date().toISOString() };
+  saveState();
+  toast("Photo de recette enregistrée.");
+  renderRecipes();
+}
+
+async function deleteRecipePhoto(recipeId) {
+  await idbDelete(`recipe-photo-${recipeId}`);
+  delete state.recipePhotos[recipeId];
+  saveState();
+  toast("Photo supprimée.");
+  renderRecipes();
+}
+
+async function renderRecipePhotoThumbs() {
+  await Promise.all(Object.keys(state.recipePhotos || {}).map(async (recipeId) => {
+    const stored = await idbGet(`recipe-photo-${recipeId}`).catch(() => null);
+    if (!stored?.blob) return;
+    const url = URL.createObjectURL(stored.blob);
+    $$(`[data-recipe-image="${recipeId}"], [data-recipe-image="${recipeId}-detail"]`).forEach((node) => {
+      node.innerHTML = `<img src="${url}" alt="Photo de recette">`;
+    });
+  }));
 }
 
 function renderTips() {
@@ -1836,7 +2011,7 @@ async function idbGet(photoId) {
   });
 }
 
-async function compressImage(file) {
+async function compressImage(file, mimeType = "image/jpeg", quality = 0.72) {
   const bitmap = await loadImageBitmap(file);
   const max = 1100;
   const scale = Math.min(1, max / Math.max(bitmap.width, bitmap.height));
@@ -1844,7 +2019,7 @@ async function compressImage(file) {
   canvas.width = Math.round(bitmap.width * scale);
   canvas.height = Math.round(bitmap.height * scale);
   canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.72));
+  return new Promise((resolve) => canvas.toBlob(resolve, mimeType, quality));
 }
 
 async function loadImageBitmap(file) {
