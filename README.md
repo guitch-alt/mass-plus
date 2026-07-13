@@ -1,4 +1,4 @@
-# Mass+ V1 Stable
+# Mass+ V1.0.1 RC
 
 Mass+ est une PWA mobile-first gratuite pour suivre les repas, calories, protéines et l’évolution du poids. Elle fonctionne sur GitHub Pages, sans compte et sans backend obligatoire.
 
@@ -7,10 +7,17 @@ Application publique : https://guitch-alt.github.io/mass-plus/
 ## Fonctionnement
 
 - Journal, profil, poids, favoris, aliments personnels et photos stockés localement dans IndexedDB.
-- Banque alimentaire locale disponible hors ligne.
+- Banque alimentaire locale enrichie disponible hors ligne, avec valeurs nutritionnelles génériques moyennes.
 - Open Food Facts utilisé uniquement après une recherche en ligne ou un scan demandé par l’utilisateur.
 - Scanner compatible iPhone et Android grâce à ZXing, avec caméra arrière et saisie manuelle de secours.
 - PWA installable, cache hors ligne et interface adaptée aux safe areas iPhone.
+- Aucune carte bancaire, clé API ou API IA payante.
+
+## Banque alimentaire locale
+
+La base locale contient des aliments français courants : légumes, fruits, condiments, boissons, protéines, féculents, légumineuses, produits sucrés et collations. Les valeurs sont des estimations génériques pour 100 g ou 100 ml, pas des valeurs exactes de produits de marque.
+
+La recherche locale ignore accents, majuscules, apostrophes, singulier/pluriel, accepte les recherches partielles et quelques fautes simples. Exemples : `oeufs`, `tomates`, `concom`, `balsamique`, `haricot rouge`.
 
 ## Photos et IA
 
@@ -20,14 +27,23 @@ Le parcours est volontaire et contrôlé par l’utilisateur :
 
 1. enregistrer une photo localement ;
 2. toucher **Partager à mon IA** ;
-3. choisir ChatGPT, Gemini ou une autre application dans la feuille de partage du téléphone ;
-4. copier la réponse JSON ;
-5. revenir dans Mass+ et toucher **Coller la réponse IA** ;
-6. vérifier et corriger chaque valeur avant l’ajout au journal.
+3. choisir entre partager la photo, copier le prompt, ouvrir ChatGPT, ouvrir Gemini ou coller une réponse ;
+4. joindre volontairement la photo dans l’application IA choisie ;
+5. coller le prompt ;
+6. copier la réponse ;
+7. revenir dans Mass+ et toucher **Coller la réponse IA** ;
+8. vérifier et corriger chaque valeur avant l’ajout au journal.
 
-Le prompt est copié dans le presse-papiers lorsque le navigateur l’autorise. La photo n’est transmise qu’à l’application explicitement choisie dans la feuille de partage native. Si le partage de fichiers n’est pas disponible, Mass+ affiche le prompt pour une copie manuelle.
+Le prompt est optimisé pour obtenir un bloc `json` facile à copier. La photo n’est transmise qu’à l’application explicitement choisie. iOS peut ne pas proposer ChatGPT ou Gemini dans la feuille de partage : ce n’est pas un bug de Mass+, il faut alors ouvrir l’app ou le site manuellement.
 
-L’importeur accepte le JSON brut, les blocs Markdown `json` et un court texte autour du JSON. Le contenu est traité comme du texte avec `JSON.parse` : aucun code n’est exécuté. Les totaux sont toujours recalculés depuis les aliments.
+L’importeur accepte le JSON brut, les blocs Markdown `json`, du texte avant/après le JSON, des clés françaises/anglaises, des nombres avec virgule décimale et un fallback texte prudent. Le contenu est traité comme du texte avec `JSON.parse` : aucun code n’est exécuté. Les totaux sont toujours recalculés depuis les aliments.
+
+## Limites connues
+
+- Les photos et réponses IA restent des estimations à vérifier.
+- Les valeurs de la base locale sont génériques.
+- Le partage vers une IA dépend d’iOS/Android et des applications installées.
+- Les données locales peuvent être supprimées par le navigateur ; utilisez l’export JSON avant un changement de téléphone.
 
 ## Développement
 

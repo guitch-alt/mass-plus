@@ -1,6 +1,6 @@
 "use strict";
 
-const APP_VERSION = "1.0.0";
+const APP_VERSION = "1.0.1";
 const STORAGE_KEY = "mass-plus-state-v2";
 const LEGACY_KEYS = ["mass-plus-mvp-v1", "mass-plus-state"];
 const DB_NAME = "mass-plus-local";
@@ -29,22 +29,33 @@ const EXCLUSION_OPTIONS = ["lactose", "gluten", "œufs", "arachides", "fruits à
 const QUICK_SNACK_IDS = ["skyr", "banane", "amandes", "lait-entier", "pain", "beurre-cacahuete", "fromage", "compote", "oeufs", "avocat"];
 const OFF_FIELDS = "code,product_name,product_name_fr,generic_name,brands,quantity,serving_size,nutriments,image_front_small_url,countries_tags";
 const PHOTO_ANALYSIS_DISCLAIMER = "Vérifiez toujours les aliments, quantités et valeurs nutritionnelles avant l’ajout au journal.";
-const MASS_PLUS_AI_PROMPT = `Analyse précisément cette photo alimentaire pour l'application Mass+.
+const MASS_PLUS_AI_PROMPT = `Analyse cette photo alimentaire pour l’application Mass+.
 
 Identifie uniquement les aliments réellement visibles.
-N'invente aucun ingrédient invisible.
+N’invente aucun ingrédient invisible.
 
 Pour chaque aliment, estime :
-- le nom en français ;
-- la quantité en grammes ou en unités ;
-- les calories ;
-- les protéines en grammes ;
-- les glucides en grammes ;
-- les lipides en grammes.
+- son nom en français ;
+- sa quantité en grammes, millilitres ou unités ;
+- ses calories ;
+- ses protéines en grammes ;
+- ses glucides en grammes ;
+- ses lipides en grammes.
 
-Donne également le total du repas.
+Donne une ligne distincte pour chaque aliment visible.
 
-Réponds uniquement avec ce JSON, sans texte avant ou après :
+Réponds avec un seul objet JSON valide.
+
+IMPORTANT POUR LA COPIE :
+- place tout le JSON dans un unique bloc de code \`\`\`json ;
+- n’écris aucun commentaire dans le JSON ;
+- n’ajoute aucun texte à l’intérieur du bloc ;
+- n’utilise pas de virgule après le dernier champ ;
+- utilise uniquement des nombres pour les valeurs nutritionnelles ;
+- utilise un point comme séparateur décimal ;
+- le bouton de copie du bloc doit permettre de copier toute la réponse facilement.
+
+Format exact :
 
 {
   "mealName": "Nom du repas",
@@ -67,13 +78,7 @@ Réponds uniquement avec ce JSON, sans texte avant ou après :
   "uncertainties": "Éléments éventuels à confirmer"
 }
 
-Les valeurs nutritionnelles doivent être numériques.
-
-Si plusieurs aliments sont visibles, crée une ligne par aliment.
-
-Si une quantité est difficile à estimer, donne une estimation prudente et indique l'incertitude.
-
-Si un emballage ou une étiquette nutritionnelle est clairement lisible, utilise les informations visibles.
+Si la photo est ambiguë, indique-le uniquement dans « uncertainties ».
 
 Ne renvoie jamais systématiquement les mêmes aliments.`;
 const SEARCH_ALIASES = {
@@ -97,7 +102,21 @@ const SEARCH_ALIASES = {
   "verre eau": ["eau du robinet", "eau plate"],
   "verre d eau": ["eau du robinet", "eau plate"],
   "eau robinet": ["eau du robinet"],
-  "eau gazeuse": ["eau gazeuse"]
+  "eau gazeuse": ["eau gazeuse"],
+  tomates: ["tomate", "tomates cerises"],
+  "tomate cerise": ["tomates cerises", "tomate"],
+  concom: ["concombre"],
+  concombre: ["concombre"],
+  melons: ["melon"],
+  vinaigre: ["vinaigre", "vinaigre balsamique", "vinaigre de cidre", "vinaigre de vin"],
+  balsamique: ["vinaigre balsamique"],
+  oeuf: ["œuf", "oeufs"],
+  oeufs: ["œuf", "oeufs"],
+  "haricot rouge": ["haricots rouges"],
+  "haricots rouge": ["haricots rouges"],
+  "haricot blanc": ["haricots blancs"],
+  cafe: ["café noir", "café filtre", "café expresso", "café"],
+  "cafe sans sucre": ["café", "café sans sucre"]
 };
 
 let baseFoods = [];
@@ -137,10 +156,11 @@ const fmt = (value, digits = 0) => new Intl.NumberFormat("fr-FR", { maximumFract
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#039;" })[char]);
 const roundTo = (value, step) => Math.round(Number(value || 0) / step) * step;
 
-function normalizeSearch(text) {
+function normalizeSearchText(text) {
   return String(text ?? "")
     .toLowerCase()
     .replaceAll("œ", "oe")
+    .replace(/[’‘‛`´]/g, "'")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[-_']/g, " ")
@@ -149,17 +169,45 @@ function normalizeSearch(text) {
     .trim();
 }
 
+function normalizeSearch(text) {
+  return normalizeSearchText(text);
+}
+
 function searchTokens(text) {
-  return normalizeSearch(text)
+  return normalizeSearchText(text)
     .split(" ")
     .filter(Boolean)
-    .map((token) => token.endsWith("s") && token.length > 3 ? token.slice(0, -1) : token);
+    .flatMap((token) => {
+      const singular = token.endsWith("s") && token.length > 3 ? token.slice(0, -1) : token;
+      return singular !== token ? [token, singular] : [token];
+    });
 }
 
 function expandedQueries(query) {
-  const normalized = normalizeSearch(query);
+  const normalized = normalizeSearchText(query);
   const aliases = SEARCH_ALIASES[normalized] || [];
-  return [normalized, ...aliases.map(normalizeSearch)].filter(Boolean);
+  const singular = normalized.endsWith("s") && normalized.length > 3 ? normalized.slice(0, -1) : "";
+  return [...new Set([normalized, singular, ...aliases.map(normalizeSearchText)].filter(Boolean))];
+}
+
+function levenshteinDistance(a, b) {
+  if (!a || !b) return Math.max(a.length, b.length);
+  const prev = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i += 1) {
+    let last = i - 1;
+    prev[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const old = prev[j];
+      prev[j] = a[i - 1] === b[j - 1] ? last : Math.min(last + 1, prev[j] + 1, prev[j - 1] + 1);
+      last = old;
+    }
+  }
+  return prev[b.length];
+}
+
+function fuzzyTokenHit(token, words) {
+  if (token.length < 4) return words.some((word) => word.startsWith(token) || token.startsWith(word));
+  return words.some((word) => word.includes(token) || token.includes(word) || levenshteinDistance(token, word) <= (token.length > 6 ? 2 : 1));
 }
 
 function emptyState() {
@@ -578,14 +626,19 @@ function findFood(foodId, includeAll = true) {
 function searchLocalFoods(query) {
   const queries = expandedQueries(query);
   const tokens = searchTokens(query);
+  const primary = queries[0] || "";
   return allFoods()
     .map((food) => {
-      const haystack = normalizeSearch([food.name, food.aliases?.join(" "), food.category, food.brands].join(" "));
-      const exact = queries.some((q) => haystack.split(" ").join(" ") === q || normalizeSearch(food.name) === q || (food.aliases || []).some((alias) => normalizeSearch(alias) === q));
+      const normalizedName = normalizeSearchText(food.name);
+      const aliases = (food.aliases || []).map(normalizeSearchText);
+      const haystack = normalizeSearchText([food.name, aliases.join(" "), food.category, food.brands].join(" "));
+      const words = [...new Set(haystack.split(" ").filter(Boolean).flatMap((word) => word.endsWith("s") && word.length > 3 ? [word, word.slice(0, -1)] : [word]))];
+      const exact = queries.some((q) => haystack === q || normalizedName === q || aliases.some((alias) => alias === q));
       const partial = queries.some((q) => q && haystack.includes(q));
-      const tokenHits = tokens.filter((part) => haystack.includes(part)).length;
+      const starts = primary && (normalizedName.startsWith(primary) || aliases.some((alias) => alias.startsWith(primary))) ? 1 : 0;
+      const tokenHits = tokens.filter((part) => fuzzyTokenHit(part, words)).length;
       const favoriteBoost = state.favorites.some((favorite) => favorite.items?.some((item) => item.food === food.id)) ? 25 : 0;
-      const score = !queries[0] ? 1 : exact ? 220 + favoriteBoost : partial ? 140 + favoriteBoost : tokenHits * 28 + favoriteBoost;
+      const score = !primary ? 1 : exact ? 260 + favoriteBoost : starts ? 210 + favoriteBoost : partial ? 160 + favoriteBoost : tokenHits * 34 + favoriteBoost;
       return { ...food, score };
     })
     .filter((food) => food.score > 0)
@@ -734,9 +787,11 @@ function openAddSheet() {
         <button class="sheet-close" type="button" aria-label="Fermer" data-close-sheet>×</button>
       </div>
       <button class="sheet-choice" type="button" data-add-choice="food"><span>1</span>Ajouter un aliment</button>
-      <button class="sheet-choice" type="button" data-add-choice="photo"><span>2</span>Photographier mon repas</button>
-      <button class="sheet-choice" type="button" data-add-choice="saved"><span>3</span>Ajouter un repas enregistré</button>
-      <button class="sheet-choice" type="button" data-add-choice="scan"><span>4</span>Scanner un code-barres</button>
+      <button class="sheet-choice" type="button" data-add-choice="manual"><span>2</span>Saisie manuelle</button>
+      <button class="sheet-choice" type="button" data-add-choice="photo"><span>3</span>Prendre une photo</button>
+      <button class="sheet-choice" type="button" data-add-choice="scan"><span>4</span>Scanner un produit</button>
+      <button class="sheet-choice" type="button" data-add-choice="share-ai"><span>5</span>Partager vers une IA</button>
+      <button class="sheet-choice" type="button" data-add-choice="paste-ai"><span>6</span>Coller une réponse IA</button>
       <p class="sheet-status" id="addSheetStatus" role="status"></p>
     </div>`;
   document.body.appendChild(overlay);
@@ -770,7 +825,19 @@ function handleAddChoice(choice) {
     go("journal");
     setTimeout(() => $("#journalSearch")?.focus(), 80);
   }
+  if (choice === "manual") {
+    selectedMeal = selectedMeal || "petit déjeuner";
+    go("journal");
+    setTimeout(() => {
+      $("details.manual-food")?.setAttribute("open", "");
+      $("#manualFoodForm [name='name']")?.focus();
+    }, 80);
+  }
   if (choice === "photo") go("photo");
+  if (choice === "share-ai" || choice === "paste-ai") {
+    go("photo");
+    setTimeout(() => toast("Choisissez d’abord une photo enregistrée, puis utilisez Partager à mon IA ou Coller la réponse IA."), 240);
+  }
   if (choice === "saved") {
     go("journal");
     setTimeout(() => $("#savedMeals")?.scrollIntoView({ block: "start", behavior: "smooth" }), 80);
@@ -1051,6 +1118,9 @@ function renderHome() {
       ${progress("Protéines", sum.protein, goals.protein)}
     </article>
     ${goals.warning ? `<article class="card notice">${esc(goals.warning)}</article>` : ""}
+    <article class="card privacy-note">
+      <p>Vos données alimentaires et photos restent stockées localement sur cet appareil, sauf lorsque vous choisissez volontairement de partager une photo vers une autre application.</p>
+    </article>
     ${dailyTipCard()}
     <div class="grid two">
       ${metric("Poids actuel", latestWeight() ? `${fmt(latestWeight(), 1)} kg` : "Profil à compléter")}
@@ -1337,7 +1407,7 @@ function bindFoodSearch(scope, onAdd) {
   const status = $(`#${scope}Status`);
   const renderResults = (items) => {
     searchResults = items;
-    results.innerHTML = items.length ? items.map((food) => foodRow(food, scope)).join("") : `<p class="small">Aucun résultat local. Essaie Rechercher pour Open Food Facts.</p>`;
+    results.innerHTML = items.length ? items.map((food) => foodRow(food, scope)).join("") : missingFoodMarkup(scope, input.value);
     $$(`[data-add-food][data-scope="${scope}"]`).forEach((button) => button.addEventListener("click", () => {
       const food = searchResults.find((item) => item.id === button.dataset.addFood);
       const grams = Number($(`[data-grams="${button.dataset.addFood}"][data-scope="${scope}"]`)?.value || defaultPortion(food));
@@ -1347,6 +1417,7 @@ function bindFoodSearch(scope, onAdd) {
       onAdd(food, grams);
       saveState();
     }));
+    bindMissingFoodActions(scope, input, renderResults, status);
   };
   const localSearch = () => renderResults(searchLocalFoods(input.value));
   input.addEventListener("input", localSearch);
@@ -1358,6 +1429,37 @@ function bindFoodSearch(scope, onAdd) {
   });
   $(`[data-off-search="${scope}"]`).addEventListener("click", () => doOffSearch(scope, input.value, renderResults, status));
   localSearch();
+}
+
+function missingFoodMarkup(scope, query) {
+  const hasQuery = normalizeSearchText(query).length >= 2;
+  return `<div class="empty-state missing-food">
+    <strong>Aliment introuvable</strong>
+    <p class="small">La base locale ne contient pas encore de résultat satisfaisant${hasQuery ? ` pour « ${esc(query.trim())} »` : ""}.</p>
+    <div class="inline-actions">
+      <button class="primary-button compact" data-create-missing="${scope}" type="button">Créer cet aliment</button>
+      <button class="secondary-button compact" data-scan-missing="${scope}" type="button">Scanner un produit</button>
+      <button class="secondary-button compact" data-online-missing="${scope}" type="button">Rechercher en ligne</button>
+      <button class="secondary-button compact" data-cancel-missing="${scope}" type="button">Annuler</button>
+    </div>
+  </div>`;
+}
+
+function bindMissingFoodActions(scope, input, renderResults, status) {
+  $(`[data-create-missing="${scope}"]`)?.addEventListener("click", () => {
+    const details = $("details.manual-food");
+    details?.setAttribute("open", "");
+    const name = $("#manualFoodForm [name='name']");
+    if (name && input.value.trim()) name.value = input.value.trim();
+    name?.focus();
+  });
+  $(`[data-scan-missing="${scope}"]`)?.addEventListener("click", openBarcodeScanner);
+  $(`[data-online-missing="${scope}"]`)?.addEventListener("click", () => doOffSearch(scope, input.value, renderResults, status));
+  $(`[data-cancel-missing="${scope}"]`)?.addEventListener("click", () => {
+    input.value = "";
+    renderResults(searchLocalFoods(""));
+    status.textContent = "";
+  });
 }
 
 async function doOffSearch(scope, query, renderResults, status) {
@@ -1399,10 +1501,20 @@ function bindManualFoodForm() {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(event.currentTarget));
     const quantity = Number(data.quantity || 100);
+    const name = data.name.trim();
+    if (!name || !Number.isFinite(quantity) || quantity <= 0) {
+      toast("Vérifiez le nom et la quantité.");
+      return;
+    }
+    const duplicate = allFoods().find((food) => normalizeSearchText(food.name) === normalizeSearchText(name) || (food.aliases || []).some((alias) => normalizeSearchText(alias) === normalizeSearchText(name)));
+    if (duplicate) {
+      toast(`${duplicate.name} existe déjà dans la banque.`);
+      return;
+    }
     const food = {
       id: `custom-${id()}`,
-      name: data.name.trim(),
-      aliases: [],
+      name,
+      aliases: [name],
       category: "personnel",
       source: "Aliment perso",
       kcalPer100g: Number(data.kcal || 0) / quantity * 100,
@@ -2227,9 +2339,77 @@ async function copyAiPrompt() {
 }
 
 async function sharePhotoWithAi(photoId) {
+  openAiShareModal(photoId);
+}
+
+function openAiShareModal(photoId) {
+  closeAiShareModal();
   const meta = state.photos.find((photo) => photo.id === photoId);
   if (!meta) return;
-  const stored = await idbGet(photoId).catch((error) => {
+  const overlay = document.createElement("div");
+  overlay.id = "aiShareModal";
+  overlay.className = "ai-import-overlay";
+  overlay.innerHTML = `<div class="ai-import-modal" role="dialog" aria-modal="true" aria-labelledby="aiShareTitle">
+    <div class="section-head"><h2 id="aiShareTitle">Analyser avec votre IA</h2><button class="sheet-close" type="button" aria-label="Fermer" data-close-ai-share>×</button></div>
+    <p class="small">Mass+ ne transmet rien automatiquement à un serveur. Choisissez comment envoyer la photo à ChatGPT, Gemini ou une autre IA.</p>
+    <div class="modal-actions ai-share-actions">
+      <button class="primary-button" data-ai-share-action="share" type="button">Partager la photo</button>
+      <button class="secondary-button" data-ai-share-action="copy" type="button">Copier le prompt</button>
+      <button class="secondary-button" data-ai-share-action="chatgpt" type="button">Ouvrir ChatGPT</button>
+      <button class="secondary-button" data-ai-share-action="gemini" type="button">Ouvrir Gemini</button>
+      <button class="secondary-button" data-ai-share-action="import" type="button">Coller la réponse IA</button>
+      <button class="secondary-button" data-close-ai-share type="button">Annuler</button>
+    </div>
+    <p class="import-status" id="aiShareStatus" role="status">Parcours conseillé : partagez ou joignez la photo, collez le prompt, puis revenez coller la réponse dans Mass+.</p>
+  </div>`;
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add("visible"));
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay || event.target.closest("[data-close-ai-share]")) closeAiShareModal();
+  });
+  $$("[data-ai-share-action]", overlay).forEach((button) => button.addEventListener("click", () => handleAiShareAction(button.dataset.aiShareAction, meta)));
+}
+
+function closeAiShareModal() {
+  const modal = $("#aiShareModal");
+  if (!modal) return;
+  modal.classList.remove("visible");
+  setTimeout(() => modal.remove(), 160);
+}
+
+async function handleAiShareAction(action, meta) {
+  const status = $("#aiShareStatus");
+  if (action === "copy") {
+    const copied = await copyAiPrompt();
+    status.textContent = copied ? "Prompt copié. Collez-le dans votre IA avec la photo." : "Copie automatique refusée. Sélectionnez le prompt depuis le panneau de secours.";
+    if (!copied) renderShareFallback(meta, false);
+    return;
+  }
+  if (action === "chatgpt") {
+    window.open("https://chatgpt.com/", "_blank", "noopener,noreferrer");
+    status.textContent = "ChatGPT ouvert. Joignez la photo puis collez le prompt copié.";
+    await copyAiPrompt();
+    return;
+  }
+  if (action === "gemini") {
+    window.open("https://gemini.google.com/", "_blank", "noopener,noreferrer");
+    status.textContent = "Gemini ouvert. Joignez la photo puis collez le prompt copié.";
+    await copyAiPrompt();
+    return;
+  }
+  if (action === "import") {
+    closeAiShareModal();
+    openAiImportModal(meta.id);
+    return;
+  }
+  if (action === "share") {
+    status.textContent = "Préparation du partage...";
+    await sharePhotoNatively(meta);
+  }
+}
+
+async function sharePhotoNatively(meta) {
+  const stored = await idbGet(meta.id).catch((error) => {
     console.error("Shared photo lookup failed", error);
     return null;
   });
@@ -2310,7 +2490,12 @@ function openAiImportModal(photoId) {
     <label for="aiResponseText">Réponse complète</label>
     <textarea id="aiResponseText" placeholder="Collez ici toute la réponse de votre IA…" spellcheck="false"></textarea>
     <p class="import-status" id="aiImportStatus" role="status"></p>
-    <div class="modal-actions"><button class="secondary-button" id="pasteAiClipboard" type="button">Coller depuis le presse-papiers</button><button class="primary-button" id="importAiResponse" type="button">Importer l’analyse</button><button class="secondary-button" data-close-ai-import type="button">Annuler</button></div>
+    <div class="modal-actions"><button class="secondary-button" id="pasteAiClipboard" type="button">Coller depuis le presse-papiers</button><button class="primary-button" id="importAiResponse" type="button">Analyser la réponse</button><button class="secondary-button" id="clearAiResponse" type="button">Effacer</button><button class="secondary-button" data-close-ai-import type="button">Annuler</button></div>
+    <div class="inline-actions import-fallback-actions" id="aiImportFallbackActions" hidden>
+      <button class="secondary-button compact" id="retryAiParse" type="button">Réessayer la lecture</button>
+      <button class="secondary-button compact" id="importAiText" type="button">Importer comme texte</button>
+      <button class="secondary-button compact" id="manualAiCorrection" type="button">Corriger manuellement</button>
+    </div>
   </div>`;
   document.body.appendChild(overlay);
   requestAnimationFrame(() => overlay.classList.add("visible"));
@@ -2322,6 +2507,13 @@ function openAiImportModal(photoId) {
   });
   $("#pasteAiClipboard").addEventListener("click", pasteAiClipboard);
   $("#importAiResponse").addEventListener("click", () => importAiResponse(meta));
+  $("#clearAiResponse").addEventListener("click", () => { $("#aiResponseText").value = ""; $("#aiImportStatus").textContent = ""; $("#aiImportFallbackActions").hidden = true; });
+  $("#retryAiParse").addEventListener("click", () => importAiResponse(meta));
+  $("#importAiText").addEventListener("click", () => importAiResponseAsText(meta));
+  $("#manualAiCorrection").addEventListener("click", () => {
+    closeAiImportModal();
+    startManualPhotoEntry(meta.id);
+  });
   setTimeout(() => $("#aiResponseText")?.focus(), 80);
 }
 
@@ -2335,7 +2527,7 @@ function closeAiImportModal() {
 async function pasteAiClipboard() {
   const status = $("#aiImportStatus");
   if (!navigator.clipboard?.readText) {
-    status.textContent = "Lecture du presse-papiers indisponible. Collez manuellement dans le champ.";
+    status.textContent = "Le collage automatique est bloqué par votre téléphone. Maintenez le doigt dans la zone puis choisissez Coller.";
     return;
   }
   try {
@@ -2343,40 +2535,72 @@ async function pasteAiClipboard() {
     status.textContent = "Réponse collée. Vérifiez-la puis importez.";
   } catch (error) {
     console.info("Clipboard read unavailable", error?.name || "clipboard_error");
-    status.textContent = "Accès au presse-papiers refusé. Collez manuellement dans le champ.";
+    status.textContent = "Le collage automatique est bloqué par votre téléphone. Maintenez le doigt dans la zone puis choisissez Coller.";
   }
 }
 
 function importAiResponse(meta) {
   const status = $("#aiImportStatus");
   try {
-    const payload = parseAiResponseText($("#aiResponseText").value);
+    const payload = extractAndParseAIResponse($("#aiResponseText").value);
     photoAnalysisDraft = buildImportedMealDraft(meta, payload);
     closeAiImportModal();
     setTimeout(renderPhotoAnalysisDraft, 180);
   } catch (error) {
     console.info("AI response import rejected", error.message);
-    status.textContent = error.message || "Réponse JSON invalide.";
+    status.textContent = "Mass+ n’a pas reconnu automatiquement toute la réponse. Vous pouvez la corriger ou importer les valeurs manuellement.";
+    $("#aiImportFallbackActions").hidden = false;
   }
 }
 
-function parseAiResponseText(input) {
+function importAiResponseAsText(meta) {
+  const status = $("#aiImportStatus");
+  try {
+    const payload = parseNutritionTextFallback($("#aiResponseText").value);
+    photoAnalysisDraft = buildImportedMealDraft(meta, payload);
+    closeAiImportModal();
+    setTimeout(renderPhotoAnalysisDraft, 180);
+  } catch {
+    status.textContent = "Mass+ n’a pas reconnu automatiquement toute la réponse. Vous pouvez la corriger ou importer les valeurs manuellement.";
+    $("#aiImportFallbackActions").hidden = false;
+  }
+}
+
+function extractAndParseAIResponse(input) {
   const text = String(input || "").replace(/^\uFEFF/, "").trim();
   if (!text) throw new Error("Collez d’abord la réponse complète de votre IA.");
   if (text.length > 100_000) throw new Error("Cette réponse est trop longue pour être importée.");
-  const cleaned = text.replace(/```(?:json)?/gi, "").replace(/```/g, "").trim();
-  const candidates = jsonObjectCandidates(cleaned);
+  const candidates = jsonBlockCandidates(text).concat(jsonObjectCandidates(text));
   for (const candidate of candidates) {
     let parsed;
-    try {
-      parsed = JSON.parse(candidate);
-    } catch {
-      // Continue until a valid JSON object containing foods is found.
-      continue;
+    for (const attempt of safeJsonCandidates(candidate)) {
+      try {
+        parsed = JSON.parse(attempt);
+      } catch {
+        continue;
+      }
+      if (parsed && typeof parsed === "object") return normalizeImportedMeal(parsed);
     }
-    if (parsed && typeof parsed === "object" && Array.isArray(parsed.foods)) return normalizeImportedMeal(parsed);
   }
-  throw new Error("JSON invalide. Copiez toute la réponse, y compris les accolades.");
+  throw new Error("Aucun JSON exploitable.");
+}
+
+function parseAiResponseText(input) {
+  return extractAndParseAIResponse(input);
+}
+
+function jsonBlockCandidates(text) {
+  return [...text.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map((match) => match[1]).filter(Boolean);
+}
+
+function safeJsonCandidates(candidate) {
+  const normalized = String(candidate || "")
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/,\s*([}\]])/g, "$1")
+    .replace(/(\d),(\d)/g, "$1.$2")
+    .trim();
+  return [...new Set([candidate.trim(), normalized])].filter(Boolean);
 }
 
 function jsonObjectCandidates(text) {
@@ -2410,45 +2634,114 @@ function jsonObjectCandidates(text) {
 }
 
 function normalizeImportedMeal(raw) {
-  const foods = raw.foods.slice(0, 24).map((food, index) => normalizeImportedFood(food, index));
-  const uncertainties = Array.isArray(raw.uncertainties)
-    ? raw.uncertainties.map((item) => String(item || "").trim()).filter(Boolean).join(" · ")
-    : String(raw.uncertainties || "").trim();
+  const foodsRaw = getKey(raw, ["foods", "aliments", "ingredients", "items"]);
+  if (!Array.isArray(foodsRaw)) throw new Error("Liste d’aliments introuvable.");
+  const foods = foodsRaw.slice(0, 24).map((food, index) => normalizeImportedFood(food, index));
+  const uncertaintiesRaw = getKey(raw, ["uncertainties", "incertitudes", "notes", "aConfirmer"]);
+  const uncertainties = Array.isArray(uncertaintiesRaw)
+    ? uncertaintiesRaw.map((item) => String(item || "").trim()).filter(Boolean).join(" · ")
+    : String(uncertaintiesRaw || "").trim();
+  const mealName = getKey(raw, ["mealName", "meal", "title", "nomRepas", "nom"]);
   return {
-    mealName: String(raw.mealName || "Repas importé").trim().slice(0, 120) || "Repas importé",
+    mealName: String(mealName || "Repas importé").trim().slice(0, 120) || "Repas importé",
     foods,
     uncertainties: uncertainties.slice(0, 1000)
   };
 }
 
+function getKey(object, keys) {
+  if (!object || typeof object !== "object") return undefined;
+  const entries = Object.entries(object);
+  for (const expected of keys.map(normalizeSearchText)) {
+    const found = entries.find(([key]) => normalizeSearchText(key) === expected);
+    if (found) return found[1];
+  }
+  return undefined;
+}
+
 function normalizeImportedFood(food, index) {
   if (!food || typeof food !== "object" || Array.isArray(food)) throw new Error(`Aliment ${index + 1} invalide.`);
-  const name = String(food.name || "").trim().slice(0, 120);
-  const quantityLabel = String(food.quantity ?? "").trim().slice(0, 60);
+  const name = String(getKey(food, ["name", "food", "aliment", "nom"]) || "").trim().slice(0, 120);
+  const quantityLabel = String(getKey(food, ["quantity", "amount", "quantite", "quantité"]) ?? "").trim().slice(0, 60);
   if (!name) throw new Error(`Nom manquant pour l’aliment ${index + 1}.`);
   if (!quantityLabel) throw new Error(`Quantité manquante pour ${name}.`);
   return {
     name,
     quantityLabel,
     grams: quantityToGrams(quantityLabel, name),
-    kcal: parseNutritionNumber(food.calories, "calories", name),
-    protein: parseNutritionNumber(food.protein, "protéines", name),
-    carbs: parseNutritionNumber(food.carbohydrates, "glucides", name),
-    fat: parseNutritionNumber(food.fat, "lipides", name)
+    kcal: parseNutritionNumber(getKey(food, ["calories", "kcal", "energy", "energie", "énergie"]), "calories", name),
+    protein: parseNutritionNumber(getKey(food, ["protein", "proteins", "proteines", "protéines"]), "protéines", name),
+    carbs: parseNutritionNumber(getKey(food, ["carbohydrates", "carbs", "glucides"]), "glucides", name),
+    fat: parseNutritionNumber(getKey(food, ["fat", "fats", "lipides"]), "lipides", name)
   };
 }
 
 function parseNutritionNumber(value, field, foodName) {
   if (typeof value === "number" && Number.isFinite(value) && value >= 0) return +value.toFixed(1);
   if (typeof value === "string") {
-    const normalized = value.trim().replace(",", ".");
-    if (/^\d+(?:\.\d+)?$/.test(normalized)) return +Number(normalized).toFixed(1);
+    const match = value.trim().replace(",", ".").match(/\d+(?:\.\d+)?/);
+    if (match) return +Number(match[0]).toFixed(1);
   }
   throw new Error(`${field} manquantes ou invalides pour ${foodName}.`);
 }
 
+function parseNutritionTextFallback(input) {
+  const text = String(input || "").slice(0, 100_000);
+  if (!text.trim()) throw new Error("Texte vide.");
+  const lines = text.split(/\n+/).map((line) => line.trim()).filter(Boolean).slice(0, 24);
+  const foods = [];
+  for (const line of lines) {
+    const kcal = numberNear(line, /(?:kcal|calories?)/i);
+    if (kcal == null) continue;
+    const namePart = line.split(/[-–—|;]/)[0]?.trim() || "Aliment à corriger";
+    foods.push({
+      name: namePart.slice(0, 120),
+      quantityLabel: quantityLabelFromText(line),
+      grams: quantityToGrams(quantityLabelFromText(line), namePart),
+      kcal,
+      protein: numberNear(line, /(?:proteines?|protéines?|protein)/i) ?? 0,
+      carbs: numberNear(line, /(?:glucides?|carbs?|carbohydrates?)/i) ?? 0,
+      fat: numberNear(line, /(?:lipides?|fat|fats?)/i) ?? 0
+    });
+  }
+  if (!foods.length) {
+    const kcal = numberNear(text, /(?:kcal|calories?)/i);
+    if (kcal == null) throw new Error("Aucune ligne nutritionnelle reconnue.");
+    foods.push({
+      name: "Aliment à corriger",
+      quantityLabel: quantityLabelFromText(text),
+      grams: quantityToGrams(quantityLabelFromText(text), ""),
+      kcal,
+      protein: numberNear(text, /(?:proteines?|protéines?|protein)/i) ?? 0,
+      carbs: numberNear(text, /(?:glucides?|carbs?|carbohydrates?)/i) ?? 0,
+      fat: numberNear(text, /(?:lipides?|fat|fats?)/i) ?? 0
+    });
+  }
+  return { mealName: "Import texte à corriger", foods, uncertainties: "Import de secours depuis texte : vérifiez chaque champ avant confirmation." };
+}
+
+function numberNear(text, labelRegex) {
+  const value = String(text || "");
+  const after = new RegExp(`${labelRegex.source}\\s*:?\\s*(\\d+(?:[,.]\\d+)?)`, "i").exec(value);
+  if (after) return Number(after[1].replace(",", "."));
+  const before = new RegExp(`(\\d+(?:[,.]\\d+)?)\\s*(?:g\\s*)?${labelRegex.source}`, "i").exec(value);
+  return before ? Number(before[1].replace(",", ".")) : null;
+}
+
+function quantityLabelFromText(text) {
+  return String(text || "").match(/(\d+(?:[,.]\d+)?)\s*(kg|g|ml|cl|l|unites?|unités?|pieces?|pièces?|tranches?)/i)?.[0] || "";
+}
+
 function quantityToGrams(quantity, foodName = "") {
-  const value = normalizeSearch(quantity).replace(",", ".");
+  const value = String(quantity || "")
+    .toLowerCase()
+    .replace(",", ".")
+    .replaceAll("œ", "oe")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[\u2019'`´]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
   const match = value.match(/(\d+(?:\.\d+)?)\s*(kg|g|ml|cl|l)\b/);
   if (match) {
     const amount = Number(match[1]);
