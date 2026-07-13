@@ -158,6 +158,20 @@ h3 { margin-bottom: 6px; font-size: 16px; }
   padding: 13px;
 }
 .food-row { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+.food-title-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.food-favorite-toggle {
+  display: inline-grid;
+  width: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: var(--soft);
+  color: var(--muted);
+  font-size: 23px;
+}
+.food-favorite-toggle.active { background: var(--soft-pink); color: var(--primary); }
 .food-thumb { width: 46px; height: 46px; object-fit: cover; border-radius: 14px; grid-row: span 2; }
 .food-actions, .entry-actions { display: grid; grid-template-columns: minmax(88px, 110px) minmax(112px, 145px); gap: 8px; align-items: end; }
 .entry-actions { grid-template-columns: minmax(82px, 100px) 62px minmax(92px, 120px); }
@@ -218,6 +232,15 @@ h3 { margin-bottom: 6px; font-size: 16px; }
 .food-search label { min-width: 0; }
 .food-search > .small,
 .food-search > .stack { grid-column: 1 / -1; }
+.food-search > .bank-discovery { grid-column: 1 / -1; }
+.bank-subtitle { margin: -4px 0 0; }
+.bank-discovery { display: grid; gap: 16px; }
+.bank-group { display: grid; gap: 8px; }
+.bank-group h3 { margin: 0; }
+.bank-search-prompt { padding: 16px; border: 1px dashed var(--line); border-radius: 18px; text-align: center; }
+.bank-search-prompt p { margin: 0; }
+.analysis-bank-match { margin: 0; color: var(--primary); font-size: 12px; font-weight: 900; }
+.analysis-save-food { max-width: none; }
 .manual-food { margin-top: 12px; }
 .manual-food summary { color: var(--primary); font-weight: 950; cursor: pointer; }
 .date-nav {

@@ -1,4 +1,4 @@
-# Mass+ V1.0.1 RC
+# Mass+ V1.0.2 RC
 
 Mass+ est une PWA mobile-first gratuite pour suivre les repas, calories, protéines et l’évolution du poids. Elle fonctionne sur GitHub Pages, sans compte et sans backend obligatoire.
 
@@ -17,7 +17,9 @@ Application publique : https://guitch-alt.github.io/mass-plus/
 
 La base locale contient des aliments français courants : légumes, fruits, condiments, boissons, protéines, féculents, légumineuses, produits sucrés et collations. Les valeurs sont des estimations génériques pour 100 g ou 100 ml, pas des valeurs exactes de produits de marque.
 
-La recherche locale ignore accents, majuscules, apostrophes, singulier/pluriel, accepte les recherches partielles et quelques fautes simples. Exemples : `oeufs`, `tomates`, `concom`, `balsamique`, `haricot rouge`.
+La Banque n’affiche jamais tout le catalogue au chargement : elle montre seulement les aliments favoris et récemment utilisés, puis jusqu’à 20 résultats après une recherche. La recherche locale ignore accents, majuscules, apostrophes, singulier/pluriel, accepte les recherches partielles et quelques fautes simples. Exemples : `oeufs`, `tomates`, `concom`, `balsamique`, `haricot rouge`.
+
+Lors d’un import IA, Mass+ réutilise un aliment local correspondant sans écraser la quantité ni les valeurs estimées pour le repas. Un aliment inconnu reste temporaire tant que l’utilisateur ne choisit pas explicitement de l’ajouter à sa banque personnelle.
 
 ## Photos et IA
 

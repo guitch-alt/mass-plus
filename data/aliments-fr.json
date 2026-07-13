@@ -1417,6 +1417,43 @@
     "source": "Base Mass+"
   },
   {
+    "id": "compote-pomme-sans-sucres-ajoutes",
+    "name": "Compote sans sucres ajoutés",
+    "aliases": [
+      "compote sans sucres ajoutés",
+      "compote sans sucre ajouté",
+      "compote pomme sans sucre",
+      "compote SSA"
+    ],
+    "keywords": [
+      "compote",
+      "pomme",
+      "fruit",
+      "collation"
+    ],
+    "category": "fruits",
+    "referenceQuantity": 100,
+    "referenceUnit": "g",
+    "defaultPortion": 100,
+    "defaultPortionG": 100,
+    "portionLabel": "1 gourde de 100 g",
+    "portionGrams": 100,
+    "kcalPer100g": 52,
+    "proteinPer100g": 0.2,
+    "carbsPer100g": 12,
+    "fatPer100g": 0.1,
+    "calories": 52,
+    "protein": 0.2,
+    "carbohydrates": 12,
+    "fat": 0.1,
+    "tags": [
+      "collation",
+      "rapide"
+    ],
+    "unit": "g",
+    "source": "Base Mass+ - valeur moyenne générique"
+  },
+  {
     "id": "comte",
     "name": "Comté",
     "aliases": [

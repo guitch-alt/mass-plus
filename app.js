@@ -1,6 +1,6 @@
 "use strict";
 
-const APP_VERSION = "1.0.1";
+const APP_VERSION = "1.0.2";
 const STORAGE_KEY = "mass-plus-state-v2";
 const LEGACY_KEYS = ["mass-plus-mvp-v1", "mass-plus-state"];
 const DB_NAME = "mass-plus-local";
@@ -207,7 +207,11 @@ function levenshteinDistance(a, b) {
 
 function fuzzyTokenHit(token, words) {
   if (token.length < 4) return words.some((word) => word.startsWith(token) || token.startsWith(word));
-  return words.some((word) => word.includes(token) || token.includes(word) || levenshteinDistance(token, word) <= (token.length > 6 ? 2 : 1));
+  return words.some((word) => {
+    if (word.includes(token)) return true;
+    if (word.length < 4) return false;
+    return token.includes(word) || levenshteinDistance(token, word) <= (token.length > 6 ? 2 : 1);
+  });
 }
 
 function emptyState() {
@@ -230,6 +234,7 @@ function emptyState() {
     entries: [],
     weights: [],
     favorites: [],
+    favoriteFoodIds: [],
     customFoods: [],
     offFoods: [],
     offCache: {},
@@ -399,6 +404,7 @@ async function loadPersistentState() {
   next.profile = { ...next.profile, ...(profileRecord?.data || {}) };
   next.entries = entries.map(normalizeEntry).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   next.favorites = favorites.map(normalizeFavorite);
+  next.favoriteFoodIds = Array.isArray(settingsRecord?.favoriteFoodIds) ? settingsRecord.favoriteFoodIds : [];
   next.customFoods = customFoods;
   next.offFoods = cachedProducts;
   next.offCache = settingsRecord?.offCache || {};
@@ -447,6 +453,7 @@ function migrateState(saved) {
   next.entries = Array.isArray(saved.entries) ? saved.entries : [];
   next.weights = Array.isArray(saved.weights) ? saved.weights : [];
   next.favorites = Array.isArray(saved.favorites) ? saved.favorites.map(normalizeFavorite) : [];
+  next.favoriteFoodIds = Array.isArray(saved.favoriteFoodIds) ? [...new Set(saved.favoriteFoodIds.filter(Boolean))] : [];
   next.customFoods = Array.isArray(saved.customFoods) ? saved.customFoods : [];
   next.offFoods = Array.isArray(saved.offFoods) ? saved.offFoods : [];
   next.offCache = saved.offCache || {};
@@ -493,6 +500,7 @@ async function persistState() {
       id: "main",
       version: APP_VERSION,
       offCache: state.offCache || {},
+      favoriteFoodIds: state.favoriteFoodIds || [],
       recipeFavorites: state.recipeFavorites || [],
       recipePhotos: state.recipePhotos || {},
       dailyTip: state.dailyTip || null,
@@ -618,6 +626,12 @@ function allFoods() {
   return [...baseFoods, ...custom, ...off, ...recipeFoods];
 }
 
+function bankFoods() {
+  const custom = state.customFoods.map((food) => ({ ...food, source: "Aliment perso" }));
+  const off = state.offFoods.map((food) => ({ ...food, source: "Open Food Facts" }));
+  return [...baseFoods, ...custom, ...off];
+}
+
 function findFood(foodId, includeAll = true) {
   const list = includeAll ? allFoods() : [...baseFoods, ...state.customFoods, ...state.offFoods];
   return list.find((food) => food.id === foodId);
@@ -627,23 +641,39 @@ function searchLocalFoods(query) {
   const queries = expandedQueries(query);
   const tokens = searchTokens(query);
   const primary = queries[0] || "";
-  return allFoods()
+  if (!primary) return [];
+  const usage = foodUsageCounts();
+  return bankFoods()
     .map((food) => {
       const normalizedName = normalizeSearchText(food.name);
       const aliases = (food.aliases || []).map(normalizeSearchText);
-      const haystack = normalizeSearchText([food.name, aliases.join(" "), food.category, food.brands].join(" "));
+      const keywords = (food.keywords || []).map(normalizeSearchText);
+      const haystack = normalizeSearchText([food.name, aliases.join(" "), keywords.join(" "), food.category, food.brands].join(" "));
       const words = [...new Set(haystack.split(" ").filter(Boolean).flatMap((word) => word.endsWith("s") && word.length > 3 ? [word, word.slice(0, -1)] : [word]))];
       const exact = queries.some((q) => haystack === q || normalizedName === q || aliases.some((alias) => alias === q));
       const partial = queries.some((q) => q && haystack.includes(q));
       const starts = primary && (normalizedName.startsWith(primary) || aliases.some((alias) => alias.startsWith(primary))) ? 1 : 0;
       const tokenHits = tokens.filter((part) => fuzzyTokenHit(part, words)).length;
-      const favoriteBoost = state.favorites.some((favorite) => favorite.items?.some((item) => item.food === food.id)) ? 25 : 0;
-      const score = !primary ? 1 : exact ? 260 + favoriteBoost : starts ? 210 + favoriteBoost : partial ? 160 + favoriteBoost : tokenHits * 34 + favoriteBoost;
-      return { ...food, score };
+      const score = exact ? 260 : starts ? 210 : partial ? 160 : tokenHits * 34;
+      return { ...food, score, usage: foodUsageCount(food, usage) };
     })
     .filter((food) => food.score > 0)
-    .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
-    .slice(0, 12);
+    .sort((a, b) => b.score - a.score || b.usage - a.usage || a.name.localeCompare(b.name, "fr"))
+    .slice(0, 20);
+}
+
+function foodUsageCounts() {
+  const usage = new Map();
+  state.entries.forEach((entry) => {
+    if (entry.foodId) usage.set(entry.foodId, (usage.get(entry.foodId) || 0) + 1);
+    const nameKey = `name:${normalizeSearchText(entry.foodName || entry.name)}`;
+    if (nameKey !== "name:") usage.set(nameKey, (usage.get(nameKey) || 0) + 1);
+  });
+  return usage;
+}
+
+function foodUsageCount(food, usage = foodUsageCounts()) {
+  return Math.max(usage.get(food.id) || 0, usage.get(`name:${normalizeSearchText(food.name)}`) || 0);
 }
 
 const OpenFoodFactsService = {
@@ -737,9 +767,20 @@ async function loadData() {
 }
 
 function normalizeFoodRecord(food) {
+  const portion = defaultPortion(food);
+  const unit = food.referenceUnit || food.unit || (normalizeSearchText(food.category).includes("boisson") ? "ml" : "g");
   return {
     ...food,
-    defaultPortionG: defaultPortion(food),
+    referenceQuantity: Number(food.referenceQuantity || 100),
+    referenceUnit: unit,
+    calories: Number(food.calories ?? food.kcalPer100g ?? 0),
+    protein: Number(food.proteinPer100g ?? food.protein ?? 0),
+    carbohydrates: Number(food.carbohydrates ?? food.carbsPer100g ?? food.carbs ?? 0),
+    fat: Number(food.fatPer100g ?? food.fat ?? 0),
+    keywords: [...new Set([...(food.keywords || []), ...(food.aliases || []), ...(food.tags || [])].filter(Boolean))],
+    defaultPortion: Number(food.defaultPortion || portion),
+    defaultPortionG: portion,
+    unit,
     source: food.source || "Base Mass+"
   };
 }
@@ -1273,13 +1314,13 @@ function renderJournal() {
   const goals = activeGoals();
   $("#screen").innerHTML = `
     <article class="card">
-      <div class="section-head"><h2>Banque alimentaire</h2><button class="ghost-inline" id="openHistory" type="button">Historique</button></div>
-      <p class="small active-date">Ajoute un aliment à ${esc(dateLabel(selectedDate))} · ${esc(selectedDate)}</p>
+      <div class="section-head"><div><h2>Banque</h2><p class="small bank-subtitle">Recherchez un aliment ou retrouvez vos favoris.</p></div><button class="ghost-inline" id="openHistory" type="button">Historique</button></div>
+      <p class="small active-date">Ajoutez un aliment à ${esc(dateLabel(selectedDate))} · ${esc(selectedDate)}</p>
       <div class="grid two">${metric("Calories du jour", `${fmt(sum.kcal)} / ${fmt(goals.calories)}`)}${metric("Protéines", `${fmt(sum.protein, 1)} / ${fmt(goals.protein)} g`)}</div>
     </article>
     <article class="card">
       <div class="tabs">${MEALS.map((meal) => `<button class="${meal === selectedMeal ? "active" : ""}" data-meal="${meal}">${meal}</button>`).join("")}</div>
-      ${foodSearchMarkup("journal", "eau, café, pain, beurre...")}
+      ${foodSearchMarkup("journal", "eau, café, pain, beurre...", bankDiscoveryMarkup())}
       <details class="manual-food"><summary>Créer un aliment manuellement</summary>${manualFoodMarkup()}</details>
     </article>
     ${savedMealsSection()}
@@ -1295,6 +1336,7 @@ function renderJournal() {
   bindMealTabs();
   bindDateNav();
   bindFoodSearch("journal", (food, grams) => addEntry(food, grams, selectedMeal));
+  bindBankDiscovery();
   bindManualFoodForm();
   bindSavedMeals();
   bindEntryButtons();
@@ -1379,13 +1421,51 @@ function bindMealTabs() {
   }));
 }
 
-function foodSearchMarkup(scope, placeholder = "banane, lait, produit...") {
+function foodSearchMarkup(scope, placeholder = "banane, lait, produit...", discoveryMarkup = "") {
   return `<div class="food-search" data-search-scope="${scope}">
     <label>Rechercher<input id="${scope}Search" placeholder="${esc(placeholder)}" autocomplete="off"></label>
     <button class="secondary-button compact" data-off-search="${scope}">Rechercher</button>
     <div id="${scope}Status" class="small"></div>
+    ${discoveryMarkup}
     <div id="${scope}Results" class="stack"></div>
   </div>`;
+}
+
+function favoriteBankFoods() {
+  return (state.favoriteFoodIds || []).map((foodId) => findFood(foodId, false)).filter(Boolean).slice(0, 8);
+}
+
+function recentBankFoods(limit = 8) {
+  const seen = new Set();
+  const foods = bankFoods();
+  return [...state.entries]
+    .sort((a, b) => String(b.createdAt || b.date).localeCompare(String(a.createdAt || a.date)))
+    .map((entry) => findFood(entry.foodId, false) || foods.find((food) => normalizeSearchText(food.name) === normalizeSearchText(entry.foodName || entry.name)))
+    .filter((food) => food && !seen.has(food.id) && seen.add(food.id))
+    .slice(0, limit);
+}
+
+function bankDiscoveryMarkup() {
+  const favorites = favoriteBankFoods();
+  const recent = recentBankFoods();
+  return `<div id="bankDiscovery" class="bank-discovery">
+    ${favorites.length ? `<section class="bank-group"><h3>Favoris</h3><div class="stack">${favorites.map((food) => foodRow(food, "bank-favorites")).join("")}</div></section>` : ""}
+    ${recent.length ? `<section class="bank-group"><h3>Récemment utilisés</h3><div class="stack">${recent.map((food) => foodRow(food, "bank-recent")).join("")}</div></section>` : ""}
+  </div>`;
+}
+
+function bindBankDiscovery() {
+  bindFoodRows("bank-favorites", favoriteBankFoods(), (food, grams) => addEntry(food, grams, selectedMeal));
+  bindFoodRows("bank-recent", recentBankFoods(), (food, grams) => addEntry(food, grams, selectedMeal));
+}
+
+function refreshBankDiscovery() {
+  const discovery = $("#bankDiscovery");
+  if (!discovery) return;
+  const wrapper = document.createElement("div");
+  wrapper.innerHTML = bankDiscoveryMarkup();
+  discovery.replaceWith(wrapper.firstElementChild);
+  bindBankDiscovery();
 }
 
 function manualFoodMarkup() {
@@ -1408,18 +1488,13 @@ function bindFoodSearch(scope, onAdd) {
   const renderResults = (items) => {
     searchResults = items;
     results.innerHTML = items.length ? items.map((food) => foodRow(food, scope)).join("") : missingFoodMarkup(scope, input.value);
-    $$(`[data-add-food][data-scope="${scope}"]`).forEach((button) => button.addEventListener("click", () => {
-      const food = searchResults.find((item) => item.id === button.dataset.addFood);
-      const grams = Number($(`[data-grams="${button.dataset.addFood}"][data-scope="${scope}"]`)?.value || defaultPortion(food));
-      if (food.source === "Open Food Facts" && !state.offFoods.some((item) => item.id === food.id)) {
-        state.offFoods.push(food);
-      }
-      onAdd(food, grams);
-      saveState();
-    }));
+    bindFoodRows(scope, items, onAdd);
     bindMissingFoodActions(scope, input, renderResults, status);
   };
-  const localSearch = () => renderResults(searchLocalFoods(input.value));
+  const localSearch = () => {
+    status.textContent = "";
+    renderResults(searchLocalFoods(input.value));
+  };
   input.addEventListener("input", localSearch);
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
@@ -1432,10 +1507,13 @@ function bindFoodSearch(scope, onAdd) {
 }
 
 function missingFoodMarkup(scope, query) {
-  const hasQuery = normalizeSearchText(query).length >= 2;
+  const hasQuery = normalizeSearchText(query).length > 0;
+  if (!hasQuery) {
+    return `<div class="empty-state bank-search-prompt"><p class="small">Recherchez un aliment dans votre banque locale.</p></div>`;
+  }
   return `<div class="empty-state missing-food">
-    <strong>Aliment introuvable</strong>
-    <p class="small">La base locale ne contient pas encore de résultat satisfaisant${hasQuery ? ` pour « ${esc(query.trim())} »` : ""}.</p>
+    <strong>Aucun aliment trouvé.</strong>
+    <p class="small">Vous pouvez l’ajouter manuellement.</p>
     <div class="inline-actions">
       <button class="primary-button compact" data-create-missing="${scope}" type="button">Créer cet aliment</button>
       <button class="secondary-button compact" data-scan-missing="${scope}" type="button">Scanner un produit</button>
@@ -1457,9 +1535,40 @@ function bindMissingFoodActions(scope, input, renderResults, status) {
   $(`[data-online-missing="${scope}"]`)?.addEventListener("click", () => doOffSearch(scope, input.value, renderResults, status));
   $(`[data-cancel-missing="${scope}"]`)?.addEventListener("click", () => {
     input.value = "";
-    renderResults(searchLocalFoods(""));
+    renderResults([]);
     status.textContent = "";
   });
+}
+
+function bindFoodRows(scope, foods, onAdd) {
+  $$(`[data-add-food][data-scope="${scope}"]`).forEach((button) => button.addEventListener("click", () => {
+    const food = foods.find((item) => item.id === button.dataset.addFood);
+    if (!food) return;
+    const grams = Number($(`[data-grams="${button.dataset.addFood}"][data-scope="${scope}"]`)?.value || defaultPortion(food));
+    if (!Number.isFinite(grams) || grams <= 0) return;
+    if (food.source === "Open Food Facts" && !state.offFoods.some((item) => item.id === food.id)) state.offFoods.push(food);
+    onAdd(food, grams);
+    saveState();
+  }));
+  $$(`[data-food-favorite][data-scope="${scope}"]`).forEach((button) => button.addEventListener("click", () => toggleFavoriteFood(button.dataset.foodFavorite)));
+}
+
+function toggleFavoriteFood(foodId) {
+  if (!findFood(foodId)) return;
+  const ids = new Set(state.favoriteFoodIds || []);
+  if (ids.has(foodId)) ids.delete(foodId);
+  else ids.add(foodId);
+  state.favoriteFoodIds = [...ids];
+  saveState();
+  const active = ids.has(foodId);
+  $$(`[data-food-favorite="${CSS.escape(foodId)}"]`).forEach((button) => {
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+    button.setAttribute("aria-label", active ? "Retirer des favoris" : "Ajouter aux favoris");
+    button.textContent = active ? "★" : "☆";
+  });
+  refreshBankDiscovery();
+  toast(active ? "Aliment ajouté aux favoris." : "Aliment retiré des favoris.");
 }
 
 async function doOffSearch(scope, query, renderResults, status) {
@@ -1482,10 +1591,11 @@ async function doOffSearch(scope, query, renderResults, status) {
 function foodRow(food, scope) {
   const source = food.source || "Base Mass+";
   const portion = defaultPortion(food);
+  const favorite = (state.favoriteFoodIds || []).includes(food.id);
   return `<div class="food-row">
     ${food.image ? `<img class="food-thumb" src="${esc(food.image)}" alt="">` : ""}
     <div>
-      <strong>${esc(food.name)}</strong>
+      <div class="food-title-row"><strong>${esc(food.name)}</strong><button class="food-favorite-toggle ${favorite ? "active" : ""}" data-food-favorite="${esc(food.id)}" data-scope="${scope}" type="button" aria-label="${favorite ? "Retirer des favoris" : "Ajouter aux favoris"}" aria-pressed="${favorite}">${favorite ? "★" : "☆"}</button></div>
       <div class="macro">${esc(source)}${food.brands ? ` · ${esc(food.brands)}` : ""}</div>
       <div class="macro">${food.incompleteNutrition ? "Informations nutritionnelles incomplètes" : `${fmt(food.kcalPer100g)} kcal / 100 ${esc(unitLabel(food))} · ${fmt(food.proteinPer100g, 1)} g prot. · portion ${fmt(portion)} ${esc(unitLabel(food))}`}</div>
     </div>
@@ -1950,6 +2060,7 @@ async function importUserData(event) {
       state.entries = mergeById(state.entries, imported.entries).map(normalizeEntry);
       state.weights = mergeById(state.weights.map(weightRecord), imported.weights.map(weightRecord));
       state.favorites = mergeById(state.favorites, imported.favorites).map(normalizeFavorite);
+      state.favoriteFoodIds = [...new Set([...(state.favoriteFoodIds || []), ...(imported.favoriteFoodIds || [])])];
       state.customFoods = mergeById(state.customFoods, imported.customFoods);
       state.offFoods = mergeById(state.offFoods, imported.offFoods);
       state.offCache = { ...imported.offCache, ...state.offCache };
@@ -2665,8 +2776,11 @@ function normalizeImportedFood(food, index) {
   const quantityLabel = String(getKey(food, ["quantity", "amount", "quantite", "quantité"]) ?? "").trim().slice(0, 60);
   if (!name) throw new Error(`Nom manquant pour l’aliment ${index + 1}.`);
   if (!quantityLabel) throw new Error(`Quantité manquante pour ${name}.`);
+  const localFood = bestFoodMatch(name);
   return {
-    name,
+    name: localFood?.name || name,
+    originalName: name,
+    localFoodId: localFood?.id || "",
     quantityLabel,
     grams: quantityToGrams(quantityLabel, name),
     kcal: parseNutritionNumber(getKey(food, ["calories", "kcal", "energy", "energie", "énergie"]), "calories", name),
@@ -2763,7 +2877,11 @@ function buildImportedMealDraft(meta, payload) {
     mealTitle: payload.mealName,
     analysisWarnings: [...(payload.uncertainties ? [payload.uncertainties] : []), ...quantityWarnings],
     source: "Réponse IA importée",
-    items: payload.foods.map((food) => ({ id: id(), ...food, source: "Réponse IA importée" }))
+    items: payload.foods.map((food) => ({
+      id: id(),
+      ...food,
+      source: food.localFoodId ? "Réponse IA · correspondance avec la banque locale" : "Réponse IA importée"
+    }))
   };
 }
 
@@ -2826,6 +2944,12 @@ function renderPhotoAnalysisDraft() {
 function analysisItemRow(item) {
   const macros = analysisItemMacros(item);
   const received = item.quantityLabel && item.quantityLabel !== `${item.grams} g` ? ` · réponse : ${item.quantityLabel}` : "";
+  const matchedFood = item.localFoodId ? findFood(item.localFoodId, false) : null;
+  const bankAction = photoAnalysisDraft.source === "Réponse IA importée"
+    ? matchedFood
+      ? `<p class="analysis-bank-match">Banque locale : ${esc(matchedFood.name)}</p>`
+      : `<button class="secondary-button compact analysis-save-food" data-analysis-save-food="${esc(item.id)}" type="button">Ajouter cet aliment à ma banque locale</button>`
+    : "";
   return `<div class="analysis-row" data-analysis-row="${esc(item.id)}">
     <label>Aliment<input value="${esc(item.name)}" placeholder="Nom de l’aliment" data-analysis-name="${esc(item.id)}"></label>
     <label>Quantité (g)<input value="${esc(item.grams || "")}" type="number" inputmode="decimal" min="1" step="1" placeholder="100" data-analysis-field="grams" data-analysis-id="${esc(item.id)}"></label>
@@ -2836,6 +2960,7 @@ function analysisItemRow(item) {
       <label>Lipides (g)<input value="${esc(macros.fat)}" type="number" inputmode="decimal" min="0" step="0.1" data-analysis-field="fat" data-analysis-id="${esc(item.id)}"></label>
     </div>
     <p class="analysis-confidence">${esc(item.source || photoAnalysisDraft.source)}${esc(received)}</p>
+    ${bankAction}
     <button class="danger-button compact" data-analysis-delete="${esc(item.id)}" type="button">Supprimer</button>
   </div>`;
 }
@@ -2853,10 +2978,55 @@ function bindPhotoAnalysisDraft() {
     photoAnalysisDraft.items = photoAnalysisDraft.items.filter((item) => item.id !== button.dataset.analysisDelete);
     renderPhotoAnalysisDraft();
   }));
-  $$('[data-analysis-name]').forEach((input) => input.addEventListener("input", () => updateAnalysisItem(input.dataset.analysisName, { name: input.value })));
+  $$('[data-analysis-name]').forEach((input) => input.addEventListener("input", () => {
+    const match = bestFoodMatch(input.value);
+    updateAnalysisItem(input.dataset.analysisName, { name: input.value, localFoodId: match?.id || "" });
+  }));
+  $$('[data-analysis-save-food]').forEach((button) => button.addEventListener("click", () => saveImportedFoodToBank(button.dataset.analysisSaveFood)));
   $$('[data-analysis-field]').forEach((input) => input.addEventListener("input", () => {
     updateAnalysisItem(input.dataset.analysisId, { [input.dataset.analysisField]: Math.max(0, Number(input.value || 0)) });
   }));
+}
+
+function saveImportedFoodToBank(itemId) {
+  const item = photoAnalysisDraft?.items.find((entry) => entry.id === itemId);
+  if (!item) return;
+  const existing = bestFoodMatch(item.name);
+  if (existing) {
+    item.localFoodId = existing.id;
+    item.source = "Réponse IA · correspondance avec la banque locale";
+    renderPhotoAnalysisDraft();
+    toast(`${existing.name} existe déjà dans la banque.`);
+    return;
+  }
+  const macros = analysisItemMacros(item);
+  if (!macros.usable) {
+    toast("Vérifiez d’abord le nom, la quantité et les valeurs nutritionnelles.");
+    return;
+  }
+  const grams = Math.max(1, Number(item.grams));
+  const food = {
+    id: `custom-${id()}`,
+    name: item.name.trim(),
+    aliases: [item.name.trim()],
+    keywords: [item.name.trim()],
+    category: "personnel",
+    source: "Aliment perso",
+    referenceQuantity: 100,
+    referenceUnit: "g",
+    kcalPer100g: macros.kcal / grams * 100,
+    proteinPer100g: macros.protein / grams * 100,
+    carbsPer100g: macros.carbs / grams * 100,
+    fatPer100g: macros.fat / grams * 100,
+    defaultPortionG: grams,
+    unit: "g"
+  };
+  state.customFoods.push(food);
+  item.localFoodId = food.id;
+  item.source = "Réponse IA · aliment validé dans votre banque locale";
+  saveState();
+  renderPhotoAnalysisDraft();
+  toast("Aliment ajouté à votre banque locale.");
 }
 
 async function renderAnalysisPhotoPreview(photoId) {
@@ -2906,16 +3076,17 @@ function photoAnalysisTotals() {
 function foodFromAnalysisItem(item) {
   const macros = analysisItemMacros(item);
   const grams = Math.max(1, Number(item.grams || 100));
+  const localFood = item.localFoodId ? findFood(item.localFoodId, false) : null;
   return {
-    id: `photo-import-${photoAnalysisDraft.id}-${item.id}`,
-    name: item.name || "Aliment confirmé",
-    source: "Analyse externe confirmée",
+    id: localFood?.id || `photo-import-${photoAnalysisDraft.id}-${item.id}`,
+    name: localFood?.name || item.name || "Aliment confirmé",
+    source: localFood?.source || "Analyse externe confirmée",
     kcalPer100g: macros.kcal / grams * 100,
     proteinPer100g: macros.protein / grams * 100,
     carbsPer100g: macros.carbs / grams * 100,
     fatPer100g: macros.fat / grams * 100,
     defaultPortionG: grams,
-    unit: "g"
+    unit: localFood?.unit || "g"
   };
 }
 
