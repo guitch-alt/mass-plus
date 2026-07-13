@@ -33,3 +33,7 @@ Si le JSON n’est pas reconnu, Mass+ propose un fallback texte prudent ou une c
 ## Risques résiduels
 
 Mass+ est une PWA publique : elle réduit les risques raisonnables côté frontend, mais ne peut pas garantir la sécurité du téléphone, du navigateur ni des applications tierces. Le contenu partagé quitte Mass+ selon les règles de confidentialité de l’application choisie. Les données locales peuvent être effacées par le navigateur ou par l’utilisateur ; l’export local reste recommandé avant une suppression de données ou un changement de téléphone.
+
+## Sauvegarde et restauration
+
+Les sauvegardes JSON sont versionnées et validées avant toute écriture. La restauration remplace l’état dans une transaction IndexedDB unique et conserve l’état précédent en mémoire pour permettre un rollback en cas d’échec. Les fichiers image ne sont pas inclus dans le JSON afin d’éviter des sauvegardes trop volumineuses ; leurs métadonnées restent exportées.

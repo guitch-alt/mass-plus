@@ -1,10 +1,13 @@
 "use strict";
 
-const APP_VERSION = "1.0.3";
+const APP_VERSION = "1.1.0";
 const STORAGE_KEY = "mass-plus-state-v2";
 const LEGACY_KEYS = ["mass-plus-mvp-v1", "mass-plus-state"];
 const DB_NAME = "mass-plus-local";
 const DB_VERSION = 1;
+const BACKUP_FORMAT = "mass-plus-backup";
+const BACKUP_VERSION = 1;
+const MAX_BACKUP_SIZE = 8_000_000;
 const PHOTO_DB = "mass-plus-photos";
 const PHOTO_STORE = "photos";
 const MEALS = ["petit déjeuner", "déjeuner", "collation", "dîner", "autre"];
@@ -129,10 +132,13 @@ let recipesTab = "recipes";
 let quickCoffeePanel = false;
 let searchResults = [];
 let dbPromise = null;
+let persistQueue = Promise.resolve();
 let selectedPhotoFile = null;
 let selectedPhotoPreviewUrl = "";
 let photoAnalysisDraft = null;
 let savedMealEditDraft = null;
+let pendingBackupRestore = null;
+let recipeFilter = "all";
 let state = emptyState();
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -145,6 +151,12 @@ const localDateKey = (date = new Date()) => {
   return `${year}-${month}-${day}`;
 };
 const today = () => localDateKey();
+const isDateKey = (value) => {
+  const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return false;
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12);
+  return date.getFullYear() === Number(match[1]) && date.getMonth() === Number(match[2]) - 1 && date.getDate() === Number(match[3]);
+};
 const addDays = (dateKey, offset) => {
   const [year, month, day] = String(dateKey || today()).split("-").map(Number);
   const date = new Date(year, month - 1, day);
@@ -218,6 +230,8 @@ function fuzzyTokenHit(token, words) {
 function emptyState() {
   return {
     version: APP_VERSION,
+    savedAt: "",
+    saveRevision: 0,
     profile: {
       firstName: "",
       age: "",
@@ -245,6 +259,7 @@ function emptyState() {
     hiddenTips: {},
     photos: [],
     pendingPhotoMeal: "déjeuner",
+    untrackedDays: [],
     migrations: {}
   };
 }
@@ -322,6 +337,58 @@ async function idbPutRecord(storeName, record) {
   });
 }
 
+function cloneState(source = state) {
+  return JSON.parse(JSON.stringify(source));
+}
+
+async function persistStateSnapshot(source) {
+  const snapshot = cloneState(source);
+  const db = await openMassDb();
+  const storeNames = ["profile", "settings", "journalEntries", "favorites", "savedMeals", "customFoods", "cachedProducts", "weights", "photoAnalyses", "recipes"];
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeNames, "readwrite");
+    const replace = (storeName, records) => {
+      const store = tx.objectStore(storeName);
+      store.clear();
+      records.forEach((record) => store.put(record));
+    };
+    tx.objectStore("profile").put({ id: "main", data: snapshot.profile, updatedAt: new Date().toISOString() });
+    tx.objectStore("settings").put({
+      id: "main",
+      version: APP_VERSION,
+      savedAt: snapshot.savedAt || "",
+      saveRevision: Number(snapshot.saveRevision || 0),
+      offCache: snapshot.offCache || {},
+      favoriteFoodIds: snapshot.favoriteFoodIds || [],
+      recipeFavorites: snapshot.recipeFavorites || [],
+      recipePhotos: snapshot.recipePhotos || {},
+      dailyTip: snapshot.dailyTip || null,
+      hiddenTips: snapshot.hiddenTips || {},
+      pendingPhotoMeal: snapshot.pendingPhotoMeal || "déjeuner",
+      untrackedDays: snapshot.untrackedDays || [],
+      migrations: snapshot.migrations || {},
+      updatedAt: new Date().toISOString()
+    });
+    replace("journalEntries", (snapshot.entries || []).map(normalizeEntry));
+    replace("favorites", (snapshot.favorites || []).map(normalizeFavorite));
+    replace("savedMeals", (snapshot.favorites || []).map(normalizeFavorite));
+    replace("customFoods", snapshot.customFoods || []);
+    replace("cachedProducts", snapshot.offFoods || []);
+    replace("weights", (snapshot.weights || []).map(weightRecord));
+    replace("photoAnalyses", snapshot.photos || []);
+    replace("recipes", recipes || []);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error || new Error("IndexedDB write failed"));
+    tx.onabort = () => reject(tx.error || new Error("IndexedDB transaction aborted"));
+  });
+}
+
+function enqueueStatePersistence(source = state) {
+  const snapshot = cloneState(source);
+  persistQueue = persistQueue.catch(() => undefined).then(() => persistStateSnapshot(snapshot));
+  return persistQueue;
+}
+
 function weightRecord(item) {
   return { id: item.id || item.date || id(), date: item.date || today(), weight: Number(item.weight || 0) };
 }
@@ -394,10 +461,10 @@ async function loadPersistentState() {
     idbGetAll("weights"),
     idbGetAll("photoAnalyses")
   ]);
+  const localState = readLocalState();
   const hasIndexedData = Boolean(profileRecord || settingsRecord || entries.length || favorites.length || savedMeals.length || customFoods.length || cachedProducts.length || weights.length || photos.length);
   if (!hasIndexedData) {
-    const migrated = loadState();
-    state = migrated;
+    state = localState || emptyState();
     await persistState();
     await idbPutRecord("meta", { id: "localStorageMigration", completedAt: new Date().toISOString(), version: APP_VERSION });
     return;
@@ -416,27 +483,40 @@ async function loadPersistentState() {
   next.hiddenTips = settingsRecord?.hiddenTips || {};
   next.photos = photos;
   next.pendingPhotoMeal = settingsRecord?.pendingPhotoMeal || "déjeuner";
+  next.untrackedDays = Array.isArray(settingsRecord?.untrackedDays) ? [...new Set(settingsRecord.untrackedDays.filter(isDateKey))] : [];
   next.migrations = settingsRecord?.migrations || {};
+  next.savedAt = settingsRecord?.savedAt || "";
+  next.saveRevision = Number(settingsRecord?.saveRevision || 0);
   next.weights = weights.map(weightRecord).sort((a, b) => a.date.localeCompare(b.date));
   const latest = latestWeightFrom(next);
   if (latest) next.profile.currentWeight = latest;
-  state = next;
+  if (localState && (localState.saveRevision > next.saveRevision || (localState.saveRevision === next.saveRevision && localState.savedAt > next.savedAt))) {
+    state = localState;
+    await persistStateSnapshot(localState);
+  } else {
+    state = next;
+  }
   if (migrateSavedMealsToRecipeFavorites(state)) await persistState();
 }
 
-function loadState() {
-  const fallback = emptyState();
+function readLocalState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY) || LEGACY_KEYS.map((key) => localStorage.getItem(key)).find(Boolean);
-    if (!raw) return fallback;
-    return migrateState(JSON.parse(raw));
+    if (!raw) return null;
+    return migrateState(JSON.parse(raw), { persist: false });
   } catch {
-    return fallback;
+    return null;
   }
 }
 
-function migrateState(saved) {
+function loadState() {
+  return readLocalState() || emptyState();
+}
+
+function migrateState(saved, options = {}) {
   const next = emptyState();
+  next.savedAt = typeof saved.savedAt === "string" ? saved.savedAt : "";
+  next.saveRevision = Number(saved.saveRevision || 0);
   const profile = saved.profile || {};
   next.profile = {
     ...next.profile,
@@ -466,13 +546,14 @@ function migrateState(saved) {
   next.hiddenTips = saved.hiddenTips && typeof saved.hiddenTips === "object" ? saved.hiddenTips : {};
   next.photos = Array.isArray(saved.photos) ? saved.photos : [];
   next.pendingPhotoMeal = saved.pendingPhotoMeal || "déjeuner";
+  next.untrackedDays = Array.isArray(saved.untrackedDays) ? [...new Set(saved.untrackedDays.filter(isDateKey))] : [];
   next.migrations = saved.migrations && typeof saved.migrations === "object" ? saved.migrations : {};
   if (!next.migrations.savedMealsV1) next.migrations.savedMealsV1 = APP_VERSION;
   migrateSavedMealsToRecipeFavorites(next);
   next.version = APP_VERSION;
   const latest = latestWeightFrom(next);
   if (latest) next.profile.currentWeight = latest;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  if (options.persist !== false) localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   return next;
 }
 
@@ -506,36 +587,19 @@ function migrateSavedMealsToRecipeFavorites(target) {
 
 function saveState() {
   state.version = APP_VERSION;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  persistState().catch(() => toast("Sauvegarde locale indisponible."));
+  state.savedAt = new Date().toISOString();
+  state.saveRevision = Number(state.saveRevision || 0) + 1;
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // IndexedDB remains the primary store when the compatibility copy is full or unavailable.
+  }
+  enqueueStatePersistence(state).catch(() => toast("Sauvegarde locale indisponible."));
 }
 
 async function persistState() {
   state.version = APP_VERSION;
-  await Promise.all([
-    idbPutRecord("profile", { id: "main", data: state.profile, updatedAt: new Date().toISOString() }),
-    idbPutRecord("settings", {
-      id: "main",
-      version: APP_VERSION,
-      offCache: state.offCache || {},
-      favoriteFoodIds: state.favoriteFoodIds || [],
-      recipeFavorites: state.recipeFavorites || [],
-      recipePhotos: state.recipePhotos || {},
-      dailyTip: state.dailyTip || null,
-      hiddenTips: state.hiddenTips || {},
-      pendingPhotoMeal: state.pendingPhotoMeal || "déjeuner",
-      migrations: state.migrations || {},
-      updatedAt: new Date().toISOString()
-    }),
-    idbReplaceAll("journalEntries", state.entries.map(normalizeEntry)),
-    idbReplaceAll("favorites", state.favorites.map(normalizeFavorite)),
-    idbReplaceAll("savedMeals", state.favorites.map(normalizeFavorite)),
-    idbReplaceAll("customFoods", state.customFoods || []),
-    idbReplaceAll("cachedProducts", state.offFoods || []),
-    idbReplaceAll("weights", (state.weights || []).map(weightRecord)),
-    idbReplaceAll("photoAnalyses", state.photos || []),
-    idbReplaceAll("recipes", recipes || [])
-  ]);
+  await enqueueStatePersistence(state);
 }
 
 function toast(message) {
@@ -661,6 +725,7 @@ function searchLocalFoods(query) {
   const primary = queries[0] || "";
   if (!primary) return [];
   const usage = foodUsageCounts();
+  const favorites = new Set(state.favoriteFoodIds || []);
   return bankFoods()
     .map((food) => {
       const normalizedName = normalizeSearchText(food.name);
@@ -673,10 +738,15 @@ function searchLocalFoods(query) {
       const starts = primary && (normalizedName.startsWith(primary) || aliases.some((alias) => alias.startsWith(primary))) ? 1 : 0;
       const tokenHits = tokens.filter((part) => fuzzyTokenHit(part, words)).length;
       const score = exact ? 260 : starts ? 210 : partial ? 160 : tokenHits * 34;
-      return { ...food, score, usage: foodUsageCount(food, usage) };
+      return { ...food, score, exact, starts, favorite: favorites.has(food.id), usage: foodUsageCount(food, usage) };
     })
     .filter((food) => food.score > 0)
-    .sort((a, b) => b.score - a.score || b.usage - a.usage || a.name.localeCompare(b.name, "fr"))
+    .sort((a, b) => Number(b.exact) - Number(a.exact)
+      || Number(b.favorite) - Number(a.favorite)
+      || b.usage - a.usage
+      || Number(b.starts) - Number(a.starts)
+      || b.score - a.score
+      || a.name.localeCompare(b.name, "fr"))
     .slice(0, 20);
 }
 
@@ -845,12 +915,11 @@ function openAddSheet() {
         <h2 id="addSheetTitle">Ajouter</h2>
         <button class="sheet-close" type="button" aria-label="Fermer" data-close-sheet>×</button>
       </div>
-      <button class="sheet-choice" type="button" data-add-choice="food"><span>1</span>Ajouter un aliment</button>
-      <button class="sheet-choice" type="button" data-add-choice="manual"><span>2</span>Saisie manuelle</button>
-      <button class="sheet-choice" type="button" data-add-choice="photo"><span>3</span>Prendre une photo</button>
-      <button class="sheet-choice" type="button" data-add-choice="scan"><span>4</span>Scanner un produit</button>
-      <button class="sheet-choice" type="button" data-add-choice="share-ai"><span>5</span>Partager vers une IA</button>
-      <button class="sheet-choice" type="button" data-add-choice="paste-ai"><span>6</span>Coller une réponse IA</button>
+      <button class="sheet-choice primary-choice" type="button" data-add-choice="photo"><span>1</span>Prendre une photo</button>
+      <button class="sheet-choice primary-choice" type="button" data-add-choice="scan"><span>2</span>Scanner un produit</button>
+      <button class="sheet-choice" type="button" data-add-choice="food"><span>3</span>Rechercher un aliment</button>
+      <button class="sheet-choice" type="button" data-add-choice="saved"><span>4</span>Ajouter un repas favori</button>
+      <p class="small add-sheet-help">La saisie manuelle reste disponible dans la Banque.</p>
       <p class="sheet-status" id="addSheetStatus" role="status"></p>
     </div>`;
   document.body.appendChild(overlay);
@@ -1100,6 +1169,9 @@ function barcodeConfirmationMarkup(food) {
 
 function bindBarcodeConfirmation(food) {
   $("#confirmScanFood").addEventListener("click", () => {
+    const button = $("#confirmScanFood");
+    if (button.disabled) return;
+    button.disabled = true;
     selectedDate = selectedDate || today();
     selectedMeal = $("#scanMeal").value;
     const grams = Number($("#scanGrams").value || defaultPortion(food));
@@ -1127,6 +1199,12 @@ function calorieRing(value, goal) {
   </div>`;
 }
 
+function calorieRemainingMessage(value, goal) {
+  if (!goal) return "Complète le profil pour calculer l’objectif.";
+  const remaining = Math.max(0, Number(goal) - Number(value || 0));
+  return remaining > 0 ? `Il reste environ ${fmt(remaining)} kcal aujourd’hui.` : "Objectif calorique atteint aujourd’hui.";
+}
+
 function tipForDate(dateKey = today()) {
   if (!tips.length) return null;
   if (state.dailyTip?.date === dateKey && tips.some((tip) => tip.id === state.dailyTip.id)) return tips.find((tip) => tip.id === state.dailyTip.id);
@@ -1143,13 +1221,29 @@ function tipForDate(dateKey = today()) {
 function dailyTipCard() {
   const dateKey = today();
   if (state.hiddenTips?.[dateKey]) return "";
-  const tip = tipForDate(dateKey);
+  const tip = contextualTip(dateKey);
   if (!tip) return "";
   return `<article class="card daily-tip-card">
     <div class="section-head"><h2>Astuce du jour</h2><button class="icon-button" id="hideDailyTip" type="button" aria-label="Masquer l’astuce du jour">×</button></div>
     <strong>${esc(tip.title)}</strong>
     <p>${esc(tip.body)}</p>
   </article>`;
+}
+
+function contextualTip(dateKey = today()) {
+  if (isUntrackedDay(dateKey)) return { title: "Journée non suivie", body: "Cette journée ne sera pas interprétée comme une journée à zéro calorie." };
+  const entries = dayEntries(dateKey);
+  if (!entries.length) return { title: "Journal du jour", body: "Rien n’est encore enregistré aujourd’hui." };
+  const sum = totals(entries);
+  const goals = activeGoals();
+  if (goals.calories && sum.kcal >= goals.calories) return { title: "Objectif calorique atteint", body: "La régularité compte plus que la perfection." };
+  if (new Date().getHours() >= 17 && goals.calories && sum.kcal < goals.calories * 0.6) {
+    return { title: "Une collation dense peut aider", body: "Skyr, banane, pain avec beurre de cacahuète ou poignée de noix sont des options simples." };
+  }
+  if (goals.protein && sum.protein < goals.protein * 0.65) {
+    return { title: "Protéines encore basses", body: "Pense aux œufs, au skyr, au poulet, au poisson ou aux légumineuses." };
+  }
+  return tipForDate(dateKey);
 }
 
 function bindDailyTip() {
@@ -1175,6 +1269,7 @@ function renderHome() {
       </div>
       ${progress("Calories", sum.kcal, goals.calories)}
       ${progress("Protéines", sum.protein, goals.protein)}
+      <p class="day-remaining">${esc(isUntrackedDay(today()) ? "Journée marquée comme non suivie." : calorieRemainingMessage(sum.kcal, goals.calories))}</p>
     </article>
     ${goals.warning ? `<article class="card notice">${esc(goals.warning)}</article>` : ""}
     <article class="card privacy-note">
@@ -1330,11 +1425,17 @@ function bindHomeFavoriteButtons() {
 function renderJournal() {
   const sum = totals(dayEntries(selectedDate));
   const goals = activeGoals();
+  const untracked = isUntrackedDay(selectedDate);
+  const remainingText = calorieRemainingMessage(sum.kcal, goals.calories).replace("aujourd’hui", "pour cette journée");
   $("#screen").innerHTML = `
     <article class="card">
       <div class="section-head"><div><h2>Banque</h2><p class="small bank-subtitle">Recherchez un aliment ou retrouvez vos favoris.</p></div><button class="ghost-inline" id="openHistory" type="button">Historique</button></div>
       <p class="small active-date">Ajoutez un aliment à ${esc(dateLabel(selectedDate))} · ${esc(selectedDate)}</p>
       <div class="grid two">${metric("Calories du jour", `${fmt(sum.kcal)} / ${fmt(goals.calories)}`)}${metric("Protéines", `${fmt(sum.protein, 1)} / ${fmt(goals.protein)} g`)}</div>
+      ${progress("Calories", sum.kcal, goals.calories)}
+      ${progress("Protéines", sum.protein, goals.protein)}
+      <p class="day-remaining">${esc(untracked ? "Journée marquée comme non suivie." : remainingText)}</p>
+      <button class="${untracked ? "primary-button" : "secondary-button"} compact day-status-button" id="toggleUntrackedDay" type="button">${untracked ? "Annuler le statut non suivi" : "Marquer comme journée non suivie"}</button>
     </article>
     <article class="card">
       <div class="tabs">${MEALS.map((meal) => `<button class="${meal === selectedMeal ? "active" : ""}" data-meal="${meal}">${meal}</button>`).join("")}</div>
@@ -1356,6 +1457,21 @@ function renderJournal() {
   bindBankDiscovery();
   bindManualFoodForm();
   bindEntryButtons();
+  $("#toggleUntrackedDay")?.addEventListener("click", toggleSelectedDayTracking);
+}
+
+function isUntrackedDay(dateKey) {
+  return (state.untrackedDays || []).includes(dateKey);
+}
+
+function toggleSelectedDayTracking() {
+  const days = new Set(state.untrackedDays || []);
+  if (days.has(selectedDate)) days.delete(selectedDate);
+  else days.add(selectedDate);
+  state.untrackedDays = [...days].filter(isDateKey).sort();
+  saveState();
+  toast(days.has(selectedDate) ? "Journée marquée comme non suivie." : "Journée de nouveau suivie.");
+  renderJournal();
 }
 
 function bindDateNav() {
@@ -1378,6 +1494,7 @@ function recentHistoryDays(limit = 30) {
   const dates = new Set();
   for (let i = 0; i < limit; i += 1) dates.add(addDays(today(), -i));
   state.entries.forEach((entry) => dates.add(entry.date));
+  (state.untrackedDays || []).forEach((date) => dates.add(date));
   return [...dates].sort((a, b) => b.localeCompare(a)).slice(0, limit);
 }
 
@@ -1398,6 +1515,9 @@ function renderHistory() {
 
 function historyRow(date, goals) {
   const entries = dayEntries(date);
+  if (isUntrackedDay(date)) {
+    return `<button class="history-row untracked" type="button" data-open-day="${esc(date)}"><span><strong>${esc(dateLabel(date))}</strong><small>${esc(date)} · journée non suivie</small></span><span><strong>Non suivie</strong><small>Non comptée comme 0 kcal</small></span></button>`;
+  }
   const sum = totals(entries);
   const caloriePct = goals.calories ? Math.round((sum.kcal / goals.calories) * 100) : 0;
   const proteinPct = goals.protein ? Math.round((sum.protein / goals.protein) * 100) : 0;
@@ -1535,14 +1655,21 @@ function bindMissingFoodActions(scope, input, renderResults, status) {
 }
 
 function bindFoodRows(scope, foods, onAdd) {
+  $$(`[data-adjust-food][data-scope="${scope}"]`).forEach((button) => button.addEventListener("click", () => {
+    const input = $(`[data-grams="${CSS.escape(button.dataset.adjustFood)}"][data-scope="${scope}"]`);
+    adjustQuantityInput(input, Number(button.dataset.delta));
+  }));
   $$(`[data-add-food][data-scope="${scope}"]`).forEach((button) => button.addEventListener("click", () => {
+    if (button.disabled) return;
+    button.disabled = true;
     const food = foods.find((item) => item.id === button.dataset.addFood);
-    if (!food) return;
+    if (!food) { button.disabled = false; return; }
     const grams = Number($(`[data-grams="${button.dataset.addFood}"][data-scope="${scope}"]`)?.value || defaultPortion(food));
-    if (!Number.isFinite(grams) || grams <= 0) return;
+    if (!Number.isFinite(grams) || grams <= 0) { button.disabled = false; return; }
     if (food.source === "Open Food Facts" && !state.offFoods.some((item) => item.id === food.id)) state.offFoods.push(food);
     onAdd(food, grams);
     saveState();
+    setTimeout(() => { if (button.isConnected) button.disabled = false; }, 500);
   }));
   $$(`[data-food-favorite][data-scope="${scope}"]`).forEach((button) => button.addEventListener("click", () => toggleFavoriteFood(button.dataset.foodFavorite)));
 }
@@ -1570,6 +1697,11 @@ async function doOffSearch(scope, query, renderResults, status) {
     status.textContent = "Tape au moins 3 caractères pour rechercher un produit.";
     return;
   }
+  if (navigator.onLine === false) {
+    status.textContent = "Connexion nécessaire pour rechercher un produit en ligne. La base locale reste disponible.";
+    renderResults(searchLocalFoods(query));
+    return;
+  }
   status.textContent = "Recherche Open Food Facts...";
   try {
     const offResults = await OpenFoodFactsService.search(query);
@@ -1594,10 +1726,23 @@ function foodRow(food, scope) {
       <div class="macro">${food.incompleteNutrition ? "Informations nutritionnelles incomplètes" : `${fmt(food.kcalPer100g)} kcal / 100 ${esc(unitLabel(food))} · ${fmt(food.proteinPer100g, 1)} g prot. · portion ${fmt(portion)} ${esc(unitLabel(food))}`}</div>
     </div>
     <div class="food-actions">
-      <label class="unit-field"><input inputmode="numeric" value="${portion}" data-grams="${food.id}" data-scope="${scope}" aria-label="Quantité"><span>${esc(unitLabel(food))}</span></label>
+      <div class="quantity-stepper"><button type="button" data-adjust-food="${esc(food.id)}" data-scope="${scope}" data-delta="-10" aria-label="Diminuer de 10 ${esc(unitLabel(food))}">−</button><label class="unit-field"><input inputmode="decimal" value="${portion}" data-grams="${food.id}" data-scope="${scope}" aria-label="Quantité"><span>${esc(unitLabel(food))}</span></label><button type="button" data-adjust-food="${esc(food.id)}" data-scope="${scope}" data-delta="10" aria-label="Augmenter de 10 ${esc(unitLabel(food))}">+</button></div>
       <button class="primary-button compact" data-add-food="${food.id}" data-scope="${scope}">Ajouter</button>
     </div>
   </div>`;
+}
+
+function adjustQuantityInput(input, delta) {
+  if (!input) return;
+  const next = Math.max(1, Math.round((Number(input.value || 0) + Number(delta || 0)) * 10) / 10);
+  input.value = String(next);
+}
+
+function entryQuantityStep(entry) {
+  const unit = normalizeSearchText(entry?.unit || "g");
+  if (unit.includes("portion")) return 0.5;
+  if (["unite", "piece", "tranche", "tasse"].some((label) => unit.includes(label))) return 1;
+  return 10;
 }
 
 function bindManualFoodForm() {
@@ -1679,13 +1824,15 @@ function mealBlock(meal) {
 }
 
 function entryRow(entry) {
+  const step = entryQuantityStep(entry);
+  const digits = step < 1 ? 1 : 0;
   return `<div class="entry-row">
     <div>
       <strong>${esc(entry.name)}</strong>
-      <div class="macro">${fmt(entry.grams)} ${esc(entry.unit || "g")} · ${fmt(entry.kcal)} kcal · ${fmt(entry.protein, 1)} g protéines</div>
+      <div class="macro">${fmt(entry.grams, digits)} ${esc(entry.unit || "g")} · ${fmt(entry.kcal)} kcal · ${fmt(entry.protein, 1)} g protéines</div>
     </div>
     <div class="entry-actions">
-      <label class="unit-field"><input inputmode="numeric" value="${entry.grams}" data-entry-grams="${entry.id}" aria-label="Quantité ${esc(entry.name)}"><span>${esc(entry.unit || "g")}</span></label>
+      <div class="quantity-stepper"><button type="button" data-entry-adjust="${entry.id}" data-delta="-${step}" aria-label="Diminuer de ${fmt(step, digits)} ${esc(entry.unit || "g")}">−</button><label class="unit-field"><input inputmode="decimal" value="${entry.grams}" data-entry-grams="${entry.id}" aria-label="Quantité ${esc(entry.name)}"><span>${esc(entry.unit || "g")}</span></label><button type="button" data-entry-adjust="${entry.id}" data-delta="${step}" aria-label="Augmenter de ${fmt(step, digits)} ${esc(entry.unit || "g")}">+</button></div>
       <button class="secondary-button compact" data-edit-entry="${entry.id}">OK</button>
       <button class="danger-button compact" data-delete-entry="${entry.id}">Supprimer</button>
     </div>
@@ -1693,6 +1840,9 @@ function entryRow(entry) {
 }
 
 function bindEntryButtons() {
+  $$('[data-entry-adjust]').forEach((button) => button.addEventListener("click", () => {
+    adjustQuantityInput($(`[data-entry-grams="${CSS.escape(button.dataset.entryAdjust)}"]`), Number(button.dataset.delta));
+  }));
   $$("[data-delete-entry]").forEach((button) => button.addEventListener("click", () => {
     state.entries = state.entries.filter((entry) => entry.id !== button.dataset.deleteEntry);
     saveState();
@@ -2007,9 +2157,21 @@ function closeSavedMealModal() {
   savedMealEditDraft = null;
 }
 
+function weightStats() {
+  const sorted = (state.weights || []).map(weightRecord).filter((item) => isDateKey(item.date) && item.weight > 0).sort((a, b) => a.date.localeCompare(b.date));
+  const first = sorted[0]?.weight || 0;
+  const latestRecord = sorted.at(-1);
+  const latest = latestRecord?.weight || latestWeight();
+  const cutoff = latestRecord ? addDays(latestRecord.date, -6) : "";
+  const recent = cutoff ? sorted.filter((item) => item.date >= cutoff && item.date <= latestRecord.date) : [];
+  const average7 = recent.length >= 2 ? recent.reduce((sum, item) => sum + item.weight, 0) / recent.length : 0;
+  return { sorted, first, latest, average7, totalChange: first && latest ? latest - first : 0 };
+}
+
 function renderWeight() {
-  const latest = latestWeight();
-  const previous = state.weights.length > 1 ? [...state.weights].sort((a, b) => b.date.localeCompare(a.date))[1]?.weight : null;
+  const stats = weightStats();
+  const latest = stats.latest;
+  const previous = stats.sorted.length > 1 ? stats.sorted.at(-2)?.weight : null;
   const delta = previous ? latest - previous : 0;
   const goals = activeGoals();
   $("#screen").innerHTML = `
@@ -2026,8 +2188,13 @@ function renderWeight() {
       <p class="small">Objectifs recalculés : ${goals.calories ? `${fmt(goals.calories)} kcal · ${fmt(goals.protein)} g protéines` : "profil à compléter"}</p>
     </article>
     <article class="card">
+      <h2>Progression</h2>
+      <div class="grid two">${metric("Poids de départ", stats.first ? `${fmt(stats.first, 1)} kg` : "À saisir")}${metric("Objectif", profileNumber("targetWeight") ? `${fmt(profileNumber("targetWeight"), 1)} kg` : "À définir")}${metric("Évolution totale", stats.first ? `${stats.totalChange >= 0 ? "+" : ""}${fmt(stats.totalChange, 1)} kg` : "À calculer")}${metric("Moyenne sur 7 jours", stats.average7 ? `${fmt(stats.average7, 1)} kg` : "Mesures insuffisantes")}</div>
+      <p class="small">Les variations quotidiennes sont normales. Mass+ ne modifie jamais l’objectif calorique automatiquement.</p>
+    </article>
+    <article class="card">
       <h2>Historique</h2>
-      <div class="stack">${state.weights.slice(-10).reverse().map((item) => `<div class="row"><span>${esc(item.date)}</span><strong>${fmt(item.weight, 1)} kg</strong></div>`).join("") || `<p class="small">Aucune mesure.</p>`}</div>
+      <div class="stack">${stats.sorted.slice(-10).reverse().map((item) => `<div class="row"><span>${esc(dateLabel(item.date))}</span><strong>${fmt(item.weight, 1)} kg</strong></div>`).join("") || `<p class="small">Aucune mesure.</p>`}</div>
     </article>`;
   $("#weightForm").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -2073,12 +2240,12 @@ function renderProfile() {
       <form id="exclusionForm" class="chips">${EXCLUSION_OPTIONS.map((item) => exclusionChip(item)).join("")}<label class="wide">Autre exclusion<input name="other" value="${esc(state.profile.exclusionOther)}"></label><button class="primary-button compact">Sauvegarder</button></form>
     </article>
     <article class="card">
-      <h2>Mes données</h2>
+      <h2>Sauvegarde de mes données</h2>
       <div class="inline-actions">
-        <button class="secondary-button compact" id="exportData" type="button">Exporter JSON</button>
-        <label class="secondary-button compact import-button">Importer JSON<input id="importData" type="file" accept="application/json,.json"></label>
+        <button class="primary-button compact" id="exportData" type="button">Exporter mes données</button>
+        <label class="secondary-button compact import-button">Restaurer une sauvegarde<input id="importData" type="file" accept="application/json,.json"></label>
       </div>
-      <p class="small">Export local complet : journal, profil, favoris, aliments personnels, cache Open Food Facts et photos sauvegardées.</p>
+      <p class="small">Le fichier contient le profil, tout le journal, les poids, aliments personnels, favoris, repas enregistrés et réglages. Les fichiers image restent sur cet appareil et ne sont pas inclus afin de garder une sauvegarde légère.</p>
     </article>
     <p class="small app-version">Mass+ v${APP_VERSION}</p>`;
   $("[name='sex']").value = state.profile.sex;
@@ -2163,51 +2330,208 @@ function bindExclusionForm() {
   });
 }
 
-function exportUserData() {
-  const payload = {
-    exportedAt: new Date().toISOString(),
-    appVersion: APP_VERSION,
-    data: state
+function backupDataFromState(source = state) {
+  const snapshot = cloneState(source);
+  return {
+    version: snapshot.version || APP_VERSION,
+    profile: snapshot.profile || {},
+    entries: snapshot.entries || [],
+    weights: snapshot.weights || [],
+    favorites: snapshot.favorites || [],
+    favoriteFoodIds: snapshot.favoriteFoodIds || [],
+    customFoods: snapshot.customFoods || [],
+    offFoods: snapshot.offFoods || [],
+    recipeFavorites: snapshot.recipeFavorites || [],
+    recipePhotos: snapshot.recipePhotos || {},
+    dailyTip: snapshot.dailyTip || null,
+    hiddenTips: snapshot.hiddenTips || {},
+    photos: snapshot.photos || [],
+    pendingPhotoMeal: snapshot.pendingPhotoMeal || "déjeuner",
+    untrackedDays: snapshot.untrackedDays || [],
+    migrations: snapshot.migrations || {}
   };
+}
+
+function buildBackupPayload(source = state) {
+  return {
+    backupFormat: BACKUP_FORMAT,
+    backupVersion: BACKUP_VERSION,
+    createdAt: new Date().toISOString(),
+    appVersion: APP_VERSION,
+    photoFiles: { included: false, metadataCount: source.photos?.length || 0, reason: "Les images restent dans le stockage local de l’appareil." },
+    data: backupDataFromState(source)
+  };
+}
+
+function exportUserData() {
+  const payload = buildBackupPayload();
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
   link.download = `mass-plus-sauvegarde-${today()}.json`;
+  link.hidden = true;
+  document.body.appendChild(link);
   link.click();
-  URL.revokeObjectURL(url);
-  toast("Sauvegarde JSON exportée.");
+  setTimeout(() => { link.remove(); URL.revokeObjectURL(url); }, 1200);
+  toast("Sauvegarde créée avec succès.");
 }
 
 async function importUserData(event) {
   const file = event.target.files?.[0];
   if (!file) return;
   try {
+    if (file.size > MAX_BACKUP_SIZE) throw new Error("backup_too_large");
     const parsed = JSON.parse(await file.text());
-    const imported = migrateState(parsed.data || parsed);
-    const replace = confirm("Remplacer les données actuelles par cette sauvegarde ? Annuler = fusionner sans effacer.");
-    if (replace) {
-      state = imported;
-    } else {
-      state.profile = { ...state.profile, ...imported.profile };
-      state.entries = mergeById(state.entries, imported.entries).map(normalizeEntry);
-      state.weights = mergeById(state.weights.map(weightRecord), imported.weights.map(weightRecord));
-      state.favorites = mergeById(state.favorites, imported.favorites).map(normalizeFavorite);
-      state.favoriteFoodIds = [...new Set([...(state.favoriteFoodIds || []), ...(imported.favoriteFoodIds || [])])];
-      state.customFoods = mergeById(state.customFoods, imported.customFoods);
-      state.offFoods = mergeById(state.offFoods, imported.offFoods);
-      state.offCache = { ...imported.offCache, ...state.offCache };
-      state.photos = mergeById(state.photos, imported.photos);
-    }
-    await persistState();
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    toast("Sauvegarde importée.");
-    renderProfile();
+    pendingBackupRestore = validateBackupPayload(parsed);
+    openBackupRestorePreview(pendingBackupRestore);
   } catch {
-    toast("Import impossible : fichier JSON invalide.");
+    pendingBackupRestore = null;
+    toast("Impossible de restaurer cette sauvegarde. Vos données actuelles n’ont pas été modifiées.");
   } finally {
     event.target.value = "";
   }
+}
+
+function validateBackupPayload(parsed) {
+  const isCurrent = parsed?.backupFormat === BACKUP_FORMAT;
+  const isLegacy = !parsed?.backupFormat && parsed?.appVersion && parsed?.data;
+  if (!isCurrent && !isLegacy) throw new Error("invalid_backup_format");
+  const backupVersion = isLegacy ? 1 : Number(parsed.backupVersion);
+  if (!Number.isInteger(backupVersion) || backupVersion < 1 || backupVersion > BACKUP_VERSION) throw new Error("unsupported_backup_version");
+  const raw = parsed.data;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) || !raw.profile || typeof raw.profile !== "object") throw new Error("invalid_backup_data");
+  const arrayLimits = { entries: 100_000, weights: 10_000, favorites: 5_000, favoriteFoodIds: 10_000, customFoods: 10_000, offFoods: 20_000, recipeFavorites: 10_000, photos: 10_000, untrackedDays: 20_000 };
+  Object.entries(arrayLimits).forEach(([key, limit]) => {
+    if (raw[key] != null && (!Array.isArray(raw[key]) || raw[key].length > limit)) throw new Error(`invalid_${key}`);
+  });
+  (raw.entries || []).forEach((entry) => {
+    if (!entry || typeof entry !== "object" || !isDateKey(entry.date)) throw new Error("invalid_raw_journal_date");
+  });
+  (raw.weights || []).forEach((item) => {
+    if (!item || typeof item !== "object" || !isDateKey(item.date)) throw new Error("invalid_raw_weight_date");
+  });
+  const restored = migrateState(raw, { persist: false });
+  restored.entries = dedupeById(restored.entries).map(normalizeEntry);
+  restored.weights = dedupeById(restored.weights.map(weightRecord)).sort((a, b) => a.date.localeCompare(b.date));
+  restored.favorites = dedupeById(restored.favorites).map(normalizeFavorite);
+  restored.customFoods = dedupeById(restored.customFoods);
+  restored.offFoods = dedupeById(restored.offFoods);
+  restored.photos = dedupeById(restored.photos);
+  restored.favoriteFoodIds = [...new Set(restored.favoriteFoodIds.filter((value) => typeof value === "string" && value))];
+  restored.recipeFavorites = [...new Set(restored.recipeFavorites.filter((value) => typeof value === "string" && value))];
+  restored.untrackedDays = [...new Set(restored.untrackedDays.filter(isDateKey))];
+  validateRestoredState(restored);
+  return {
+    state: restored,
+    createdAt: parsed.createdAt || parsed.exportedAt || "",
+    backupVersion,
+    legacy: isLegacy,
+    summary: backupSummary(restored)
+  };
+}
+
+function dedupeById(items) {
+  const map = new Map();
+  (items || []).forEach((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("invalid_record");
+    const key = item.id || `${item.date || "record"}-${index}`;
+    map.set(String(key), { ...item, id: item.id || String(key) });
+  });
+  return [...map.values()];
+}
+
+function validateRestoredState(restored) {
+  restored.entries.forEach((entry) => {
+    if (!isDateKey(entry.date) || !MEALS.includes(entry.meal)) throw new Error("invalid_journal_entry");
+    const values = [entry.grams, entry.kcal, entry.protein, entry.carbs, entry.fat].map(Number);
+    if (!entry.id || !entry.name || values.some((value) => !Number.isFinite(value) || value < 0)) throw new Error("invalid_journal_values");
+  });
+  restored.weights.forEach((item) => {
+    if (!isDateKey(item.date) || !Number.isFinite(Number(item.weight)) || Number(item.weight) <= 0) throw new Error("invalid_weight");
+  });
+  [...restored.customFoods, ...restored.offFoods].forEach((food) => {
+    const values = [food.kcalPer100g, food.proteinPer100g, food.carbsPer100g, food.fatPer100g].map(Number);
+    if (!food.id || !food.name || values.some((value) => !Number.isFinite(value) || value < 0)) throw new Error("invalid_food");
+  });
+}
+
+function backupSummary(restored) {
+  return {
+    days: new Set(restored.entries.map((entry) => entry.date)).size,
+    entries: restored.entries.length,
+    weights: restored.weights.length,
+    savedMeals: restored.favorites.length,
+    favoriteRecipes: restored.recipeFavorites.length,
+    customFoods: restored.customFoods.length
+  };
+}
+
+function backupDateLabel(createdAt) {
+  const date = new Date(createdAt);
+  return Number.isNaN(date.getTime()) ? "date inconnue" : new Intl.DateTimeFormat("fr-FR", { dateStyle: "long", timeStyle: "short" }).format(date);
+}
+
+function openBackupRestorePreview(backup) {
+  closeBackupRestorePreview();
+  const overlay = document.createElement("div");
+  overlay.id = "backupRestoreModal";
+  overlay.className = "ai-import-overlay";
+  const summary = backup.summary;
+  overlay.innerHTML = `<div class="ai-import-modal backup-restore-modal" role="dialog" aria-modal="true" aria-labelledby="backupRestoreTitle">
+    <div class="section-head"><h2 id="backupRestoreTitle">Restaurer une sauvegarde</h2><button class="sheet-close" type="button" aria-label="Fermer" data-close-backup>×</button></div>
+    <p><strong>Sauvegarde du ${esc(backupDateLabel(backup.createdAt))}</strong></p>
+    <p class="small">Cette sauvegarde contient :</p>
+    <ul class="backup-summary"><li>${summary.days} journée(s) de journal · ${summary.entries} entrée(s)</li><li>${summary.weights} mesure(s) de poids</li><li>${summary.savedMeals} repas enregistré(s)</li><li>${summary.favoriteRecipes} recette(s) favorite(s)</li><li>${summary.customFoods} aliment(s) personnel(s)</li></ul>
+    <p class="notice analysis-notice">La restauration remplacera les données actuelles de Mass+. Une copie de sécurité sera conservée en mémoire pendant l’opération.</p>
+    <p class="small">Les images ne font pas partie du fichier JSON. Leurs métadonnées sont conservées, mais une image absente de cet appareil ne pourra pas être affichée.</p>
+    <div class="modal-actions"><button class="primary-button" id="confirmBackupRestore" type="button">Restaurer cette sauvegarde</button><button class="secondary-button" data-close-backup type="button">Annuler</button></div>
+  </div>`;
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add("visible"));
+  overlay.addEventListener("click", (event) => { if (event.target === overlay || event.target.closest("[data-close-backup]")) closeBackupRestorePreview(); });
+  $("#confirmBackupRestore").addEventListener("click", restorePendingBackup);
+}
+
+function closeBackupRestorePreview() {
+  $("#backupRestoreModal")?.remove();
+}
+
+async function restorePendingBackup(event) {
+  if (!pendingBackupRestore) return;
+  const button = event.currentTarget;
+  button.disabled = true;
+  button.textContent = "Restauration…";
+  const previousState = cloneState(state);
+  const previousLocal = localStorage.getItem(STORAGE_KEY);
+  const restoredState = cloneState(pendingBackupRestore.state);
+  restoredState.savedAt = new Date().toISOString();
+  restoredState.saveRevision = Number(previousState.saveRevision || 0) + 1;
+  try {
+    await persistQueue.catch(() => undefined);
+    persistQueue = persistStateSnapshot(restoredState);
+    await persistQueue;
+  } catch {
+    state = previousState;
+    try {
+      persistQueue = persistStateSnapshot(previousState);
+      await persistQueue;
+    } catch {
+      // The failed restore transaction is atomic; this retry only covers a later localStorage failure.
+    }
+    if (previousLocal == null) localStorage.removeItem(STORAGE_KEY);
+    else localStorage.setItem(STORAGE_KEY, previousLocal);
+    button.disabled = false;
+    button.textContent = "Restaurer cette sauvegarde";
+    toast("Impossible de restaurer cette sauvegarde. Vos données actuelles n’ont pas été modifiées.");
+    return;
+  }
+  state = restoredState;
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch { /* IndexedDB contains the complete restored state. */ }
+  pendingBackupRestore = null;
+  closeBackupRestorePreview();
+  renderProfile();
+  toast("Sauvegarde restaurée avec succès.");
 }
 
 function mergeById(current, incoming) {
@@ -2221,9 +2545,23 @@ function filteredRecipes() {
   const list = recipes.filter((recipe) => {
     if (exclusions.includes("végétarien") && !recipe.tags?.includes("végétarien")) return false;
     return !exclusions.some((item) => (recipe.exclusions || []).includes(item));
-  });
+  }).filter(recipeMatchesActiveFilter);
   if (recipesTab === "favorites") return list.filter((recipe) => isRecipeFavorite(recipe.id));
   return list;
+}
+
+function recipeMatchesActiveFilter(recipe) {
+  const labels = [recipe.type, recipe.category, ...(recipe.tags || [])].map(normalizeSearchText);
+  if (recipeFilter === "breakfast") return labels.some((label) => label.includes("petit dejeuner"));
+  if (recipeFilter === "snack") return labels.some((label) => label.includes("collation"));
+  if (recipeFilter === "quick") return labels.some((label) => label.includes("rapide"));
+  if (recipeFilter === "calorieDense") return Number(recipe.kcal || 0) >= 700;
+  if (recipeFilter === "highProtein") return Number(recipe.protein || 0) >= 30;
+  return true;
+}
+
+function recipeFilterMarkup() {
+  return `<label class="recipe-filter">Filtrer<select id="recipeFilter"><option value="all">Toutes</option><option value="breakfast">Petit déjeuner</option><option value="snack">Collation</option><option value="quick">Rapide</option><option value="calorieDense">Riche en calories</option><option value="highProtein">Riche en protéines</option></select></label>`;
 }
 
 function isRecipeFavorite(recipeId) {
@@ -2255,6 +2593,7 @@ function renderRecipes() {
       <button class="${recipesTab === "favorites" ? "active" : ""}" data-recipes-tab="favorites">Mes favorites</button>
       <button class="${recipesTab === "tips" ? "active" : ""}" data-recipes-tab="tips">Astuces</button>
     </div>
+    ${recipesTab !== "tips" ? recipeFilterMarkup() : ""}
     ${recipesTab === "tips"
       ? `<p class="small">Astuces déjà présentes dans Mass+.</p><div class="stack">${tips.map(tipCard).join("")}</div>`
       : `${recipesTab === "favorites" ? `<div class="favorites-toolbar"><p class="small">${favoriteCount} favori(s) : recettes et repas enregistrés.</p><button id="createSavedMeal" class="secondary-button compact" type="button">Enregistrer un repas</button></div>` : `<p class="small">${list.length} recette(s) compatibles avec le profil.</p>`}<div class="stack">${list.map(recipeCard).join("")}${savedMeals.map(savedMealCard).join("")}${recipesTab === "favorites" && !favoriteCount ? `<p class="small empty-state">Aucun favori pour le moment.</p>` : ""}</div>`}
@@ -2264,6 +2603,10 @@ function renderRecipes() {
     recipesTab = button.dataset.recipesTab;
     renderRecipes();
   }));
+  if ($("#recipeFilter")) {
+    $("#recipeFilter").value = recipeFilter;
+    $("#recipeFilter").addEventListener("change", (event) => { recipeFilter = event.currentTarget.value; renderRecipes(); });
+  }
   bindRecipeButtons();
   bindSavedMealCards();
   renderRecipePhotoThumbs();
@@ -2279,11 +2622,20 @@ function recipeCard(recipe) {
   const difficulty = recipe.difficulty || recipe.type || recipe.category || "recette";
   const cost = recipe.cost || recipe.budget || "";
   const favorite = isRecipeFavorite(recipe.id);
+  const recommendedMeal = recipeRecommendedMeal(recipe);
   return `<div class="recipe-card">
     <div class="recipe-card-head">${recipeImageMarkup(recipe)}<div><span class="item-type-badge">Recette</span><strong class="item-card-title">${esc(recipe.name)}</strong><div class="macro">${esc(duration)} · ${esc(difficulty)} ${cost ? `· ${esc(cost)} ` : ""}· ${fmt(recipe.kcal)} kcal · ${fmt(recipe.protein)} g prot.</div></div><button class="heart-button ${favorite ? "active" : ""}" data-recipe-heart="${recipe.id}" type="button" aria-label="${favorite ? "Retirer des favorites" : "Ajouter aux favorites"}">♥</button></div>
     <details><summary>Voir les ingrédients</summary>${recipeImageMarkup({ ...recipe, id: `${recipe.id}-detail`, name: recipe.name, category: "aperçu" })}<ul>${(recipe.ingredients || []).map((item) => `<li>${esc(item)}</li>`).join("")}</ul><ol>${(recipe.steps || []).map((step) => `<li>${esc(step)}</li>`).join("")}</ol></details>
-    <div class="recipe-controls"><label>Portions<input inputmode="decimal" value="1" data-recipe-portions="${recipe.id}"></label><button class="primary-button compact" data-recipe-journal="${recipe.id}">Ajouter</button><label class="secondary-button compact recipe-photo-button">Photo<input type="file" accept="image/*" data-recipe-photo="${recipe.id}"></label>${state.recipePhotos?.[recipe.id] ? `<button class="danger-button compact" data-delete-recipe-photo="${recipe.id}">Suppr. photo</button>` : ""}</div>
+    <div class="portion-presets" aria-label="Portions rapides">${[0.5, 1, 2].map((portion) => `<button type="button" data-set-recipe-portions="${recipe.id}" data-value="${portion}">${portion} portion${portion > 1 ? "s" : ""}</button>`).join("")}</div>
+    <div class="recipe-controls"><label>Portions<input inputmode="decimal" value="1" min="0.5" step="0.5" data-recipe-portions="${recipe.id}"></label><label>Repas<select data-recipe-meal="${recipe.id}">${MEALS.map((meal) => `<option ${meal === recommendedMeal ? "selected" : ""}>${esc(meal)}</option>`).join("")}</select></label><button class="primary-button compact" data-recipe-journal="${recipe.id}">Ajouter</button><label class="secondary-button compact recipe-photo-button">Photo<input type="file" accept="image/*" data-recipe-photo="${recipe.id}"></label>${state.recipePhotos?.[recipe.id] ? `<button class="danger-button compact" data-delete-recipe-photo="${recipe.id}">Suppr. photo</button>` : ""}</div>
   </div>`;
+}
+
+function recipeRecommendedMeal(recipe) {
+  const label = normalizeSearchText([recipe.type, recipe.category, ...(recipe.tags || [])].join(" "));
+  if (label.includes("petit dejeuner")) return "petit déjeuner";
+  if (label.includes("collation")) return "collation";
+  return "déjeuner";
 }
 
 function savedMealCard(savedMeal) {
@@ -2294,7 +2646,8 @@ function savedMealCard(savedMeal) {
       <details class="saved-meal-menu"><summary aria-label="Actions pour ${esc(savedMeal.name)}">⋯</summary><div class="saved-meal-menu-actions"><button type="button" data-edit-saved-meal="${esc(savedMeal.id)}">Modifier</button><button type="button" class="danger-text" data-delete-saved-meal="${esc(savedMeal.id)}">Supprimer</button></div></details>
     </div>
     <details class="saved-meal-details"><summary>Voir les aliments</summary><ul>${savedMeal.items.length ? savedMeal.items.map(savedMealItemMarkup).join("") : `<li>Ce repas ne contient encore aucun aliment.</li>`}</ul></details>
-    <div class="recipe-controls"><label>Portions<input inputmode="decimal" value="1" min="0.1" step="0.1" data-saved-meal-portions="${esc(savedMeal.id)}"></label><button class="primary-button compact" type="button" data-add-saved-meal="${esc(savedMeal.id)}">Ajouter</button></div>
+    <div class="portion-presets" aria-label="Portions rapides">${[0.5, 1, 2].map((portion) => `<button type="button" data-set-saved-portions="${esc(savedMeal.id)}" data-value="${portion}">${portion} portion${portion > 1 ? "s" : ""}</button>`).join("")}</div>
+    <div class="recipe-controls"><label>Portions<input inputmode="decimal" value="1" min="0.5" step="0.5" data-saved-meal-portions="${esc(savedMeal.id)}"></label><button class="primary-button compact" type="button" data-add-saved-meal="${esc(savedMeal.id)}">Ajouter</button></div>
   </div>`;
 }
 
@@ -2306,7 +2659,16 @@ function savedMealItemMarkup(item) {
 
 function bindSavedMealCards() {
   $("#createSavedMeal")?.addEventListener("click", openSavedMealCreator);
-  $$('[data-add-saved-meal]').forEach((button) => button.addEventListener("click", () => addSavedMealToJournal(button.dataset.addSavedMeal)));
+  $$('[data-set-saved-portions]').forEach((button) => button.addEventListener("click", () => {
+    const input = $(`[data-saved-meal-portions="${CSS.escape(button.dataset.setSavedPortions)}"]`);
+    if (input) input.value = button.dataset.value;
+  }));
+  $$('[data-add-saved-meal]').forEach((button) => button.addEventListener("click", () => {
+    if (button.disabled) return;
+    button.disabled = true;
+    addSavedMealToJournal(button.dataset.addSavedMeal);
+    setTimeout(() => { if (button.isConnected) button.disabled = false; }, 600);
+  }));
   $$('[data-edit-saved-meal]').forEach((button) => button.addEventListener("click", () => openSavedMealEditor(button.dataset.editSavedMeal)));
   $$('[data-delete-saved-meal]').forEach((button) => button.addEventListener("click", () => deleteSavedMeal(button.dataset.deleteSavedMeal)));
 }
@@ -2359,7 +2721,15 @@ function deleteSavedMeal(savedMealId) {
 }
 
 function bindRecipeButtons() {
-  $$('[data-recipe-journal]').forEach((button) => button.addEventListener("click", () => addRecipeToJournal(button.dataset.recipeJournal)));
+  $$('[data-set-recipe-portions]').forEach((button) => button.addEventListener("click", () => {
+    const input = $(`[data-recipe-portions="${CSS.escape(button.dataset.setRecipePortions)}"]`);
+    if (input) input.value = button.dataset.value;
+  }));
+  $$('[data-recipe-journal]').forEach((button) => button.addEventListener("click", () => {
+    if (button.disabled) return;
+    button.disabled = true;
+    addRecipeToJournal(button.dataset.recipeJournal);
+  }));
   $$('[data-recipe-heart]').forEach((button) => button.addEventListener("click", () => toggleRecipeFavorite(button.dataset.recipeHeart)));
   $$('[data-recipe-photo]').forEach((input) => input.addEventListener("change", saveRecipePhoto));
   $$('[data-delete-recipe-photo]').forEach((button) => button.addEventListener("click", () => deleteRecipePhoto(button.dataset.deleteRecipePhoto)));
@@ -2374,8 +2744,11 @@ function addRecipeToJournal(recipeId) {
   const recipe = recipes.find((item) => item.id === recipeId);
   if (!recipe) return;
   const portions = recipePortions(recipeId);
+  const meal = $(`[data-recipe-meal="${CSS.escape(recipeId)}"]`)?.value || recipeRecommendedMeal(recipe);
+  selectedDate = today();
+  selectedMeal = meal;
   if (!recipe.items?.length) {
-    addEntry(recipeAsFood(recipe), portions, selectedMeal || "déjeuner", false);
+    addEntry(recipeAsFood(recipe), portions, meal, false);
     saveState();
     toast("Recette ajoutée au journal.");
     go("home");
@@ -2383,11 +2756,11 @@ function addRecipeToJournal(recipeId) {
   }
   recipe.items.forEach((item) => {
     const food = findFood(item.food);
-    if (food) addEntry(food, item.grams * portions, recipe.meal || "déjeuner", false);
+    if (food) addEntry(food, item.grams * portions, meal, false);
   });
   saveState();
   toast("Recette ajoutée au journal.");
-  selectedMeal = recipe.meal || "déjeuner";
+  selectedMeal = meal;
   go("home");
 }
 
@@ -2705,12 +3078,14 @@ async function handleAiShareAction(action, meta) {
     return;
   }
   if (action === "chatgpt") {
+    if (navigator.onLine === false) { status.textContent = "Connexion nécessaire pour ouvrir ChatGPT."; return; }
     window.open("https://chatgpt.com/", "_blank", "noopener,noreferrer");
     status.textContent = "ChatGPT ouvert. Joignez la photo puis collez le prompt copié.";
     await copyAiPrompt();
     return;
   }
   if (action === "gemini") {
+    if (navigator.onLine === false) { status.textContent = "Connexion nécessaire pour ouvrir Gemini."; return; }
     window.open("https://gemini.google.com/", "_blank", "noopener,noreferrer");
     status.textContent = "Gemini ouvert. Joignez la photo puis collez le prompt copié.";
     await copyAiPrompt();
@@ -2809,7 +3184,7 @@ function openAiImportModal(photoId) {
     <label for="aiResponseText">Réponse complète</label>
     <textarea id="aiResponseText" placeholder="Collez ici toute la réponse de votre IA…" spellcheck="false"></textarea>
     <p class="import-status" id="aiImportStatus" role="status"></p>
-    <div class="modal-actions"><button class="secondary-button" id="pasteAiClipboard" type="button">Coller depuis le presse-papiers</button><button class="primary-button" id="importAiResponse" type="button">Analyser la réponse</button><button class="secondary-button" id="clearAiResponse" type="button">Effacer</button><button class="secondary-button" data-close-ai-import type="button">Annuler</button></div>
+    <div class="modal-actions"><button class="secondary-button" id="pasteAiClipboard" type="button">Coller le résultat</button><button class="primary-button" id="importAiResponse" type="button">Analyser la réponse</button><button class="secondary-button" id="clearAiResponse" type="button">Effacer</button><button class="secondary-button" data-close-ai-import type="button">Annuler</button></div>
     <div class="inline-actions import-fallback-actions" id="aiImportFallbackActions" hidden>
       <button class="secondary-button compact" id="retryAiParse" type="button">Réessayer la lecture</button>
       <button class="secondary-button compact" id="importAiText" type="button">Importer comme texte</button>
@@ -2846,7 +3221,8 @@ function closeAiImportModal() {
 async function pasteAiClipboard() {
   const status = $("#aiImportStatus");
   if (!navigator.clipboard?.readText) {
-    status.textContent = "Le collage automatique est bloqué par votre téléphone. Maintenez le doigt dans la zone puis choisissez Coller.";
+    $("#aiResponseText")?.focus();
+    status.textContent = "Collez ici le résultat copié depuis Gemini.";
     return;
   }
   try {
@@ -2854,7 +3230,8 @@ async function pasteAiClipboard() {
     status.textContent = "Réponse collée. Vérifiez-la puis importez.";
   } catch (error) {
     console.info("Clipboard read unavailable", error?.name || "clipboard_error");
-    status.textContent = "Le collage automatique est bloqué par votre téléphone. Maintenez le doigt dans la zone puis choisissez Coller.";
+    $("#aiResponseText")?.focus();
+    status.textContent = "Collez ici le résultat copié depuis Gemini.";
   }
 }
 
@@ -2890,17 +3267,21 @@ function extractAndParseAIResponse(input) {
   if (!text) throw new Error("Collez d’abord la réponse complète de votre IA.");
   if (text.length > 100_000) throw new Error("Cette réponse est trop longue pour être importée.");
   const candidates = jsonBlockCandidates(text).concat(jsonObjectCandidates(text));
+  const parsedMeals = new Map();
   for (const candidate of candidates) {
-    let parsed;
     for (const attempt of safeJsonCandidates(candidate)) {
       try {
-        parsed = JSON.parse(attempt);
+        const parsed = JSON.parse(attempt);
+        if (!parsed || typeof parsed !== "object") continue;
+        const meal = normalizeImportedMeal(parsed);
+        parsedMeals.set(JSON.stringify(meal), meal);
       } catch {
         continue;
       }
-      if (parsed && typeof parsed === "object") return normalizeImportedMeal(parsed);
     }
   }
+  if (parsedMeals.size > 1) throw new Error("Plusieurs objets JSON concurrents ont été détectés.");
+  if (parsedMeals.size === 1) return [...parsedMeals.values()][0];
   throw new Error("Aucun JSON exploitable.");
 }
 
@@ -2994,7 +3375,7 @@ function normalizeImportedFood(food, index) {
     kcal: parseNutritionNumber(getKey(food, ["calories", "kcal", "energy", "energie", "énergie"]), "calories", name),
     protein: parseNutritionNumber(getKey(food, ["protein", "proteins", "proteines", "protéines"]), "protéines", name),
     carbs: parseNutritionNumber(getKey(food, ["carbohydrates", "carbs", "glucides"]), "glucides", name),
-    fat: parseNutritionNumber(getKey(food, ["fat", "fats", "lipides"]), "lipides", name)
+    fat: parseNutritionNumber(getKey(food, ["fat", "fats", "lipid", "lipids", "lipides"]), "lipides", name)
   };
 }
 
@@ -3176,7 +3557,12 @@ function analysisItemRow(item) {
 function bindPhotoAnalysisDraft() {
   $("#closeAnalysis")?.addEventListener("click", cancelPhotoAnalysisPanel);
   $("#cancelPhotoAnalysis")?.addEventListener("click", cancelPhotoAnalysisPanel);
-  $("#confirmPhotoMeal")?.addEventListener("click", confirmPhotoAnalysis);
+  $("#confirmPhotoMeal")?.addEventListener("click", (event) => {
+    if (event.currentTarget.disabled) return;
+    event.currentTarget.disabled = true;
+    const added = confirmPhotoAnalysis();
+    if (!added) event.currentTarget.disabled = false;
+  });
   $("#focusCorrection")?.addEventListener("click", () => $('[data-analysis-name]')?.focus());
   $("#analysisAddFood")?.addEventListener("click", () => {
     photoAnalysisDraft.items.push(emptyMealItem());
@@ -3301,12 +3687,12 @@ function foodFromAnalysisItem(item) {
 function confirmPhotoAnalysis() {
   if (!photoAnalysisDraft?.items.length) {
     toast("Ajoutez au moins un aliment.");
-    return;
+    return false;
   }
   const incomplete = photoAnalysisDraft.items.filter((item) => !analysisItemMacros(item).usable);
   if (incomplete.length) {
     toast("Vérifiez les noms, quantités et valeurs nutritionnelles.");
-    return;
+    return false;
   }
   selectedDate = photoAnalysisDraft.date;
   selectedMeal = photoAnalysisDraft.meal;
@@ -3334,6 +3720,7 @@ function confirmPhotoAnalysis() {
   toast("Repas ajouté au journal après confirmation.");
   photoAnalysisDraft = null;
   go("home");
+  return true;
 }
 
 async function init() {
@@ -3357,7 +3744,9 @@ async function init() {
   render();
   $("#installHelp").addEventListener("click", () => toast("iPhone Safari : Partager puis Ajouter à l’écran d’accueil. Android Chrome : Installer l’application."));
   if ("serviceWorker" in navigator) {
-    window.addEventListener("load", () => navigator.serviceWorker.register("./service-worker.js").catch(() => undefined));
+    const registerServiceWorker = () => navigator.serviceWorker.register("./service-worker.js").catch(() => undefined);
+    if (document.readyState === "complete") registerServiceWorker();
+    else window.addEventListener("load", registerServiceWorker, { once: true });
   }
   window.addEventListener("hashchange", () => {
     const next = location.hash.replace("#", "");

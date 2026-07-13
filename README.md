@@ -1,4 +1,4 @@
-# Mass+ V1.0.3 RC
+# Mass+ V1.1.0
 
 Mass+ est une PWA mobile-first gratuite pour suivre les repas, calories, protéines et l’évolution du poids. Elle fonctionne sur GitHub Pages, sans compte et sans backend obligatoire.
 
@@ -9,6 +9,9 @@ Application publique : https://guitch-alt.github.io/mass-plus/
 - Journal, profil, poids, favoris, aliments personnels et photos stockés localement dans IndexedDB.
 - Banque alimentaire locale enrichie disponible hors ligne, avec valeurs nutritionnelles génériques moyennes.
 - Repas enregistrés regroupés dans **Recettes > Mes favorites**, avec portions, modification et ajout direct au journal.
+- Sauvegarde JSON versionnée et restauration validée avec transaction locale et rollback.
+- Journal fiabilisé avec dates locales, journées non suivies, calories restantes et écritures IndexedDB sérialisées.
+- Ajout central simplifié : photo, scanner, recherche d’aliment ou repas favori.
 - Open Food Facts utilisé uniquement après une recherche en ligne ou un scan demandé par l’utilisateur.
 - Scanner compatible iPhone et Android grâce à ZXing, avec caméra arrière et saisie manuelle de secours.
 - PWA installable, cache hors ligne et interface adaptée aux safe areas iPhone.
