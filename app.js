@@ -1,6 +1,6 @@
 "use strict";
 
-const APP_VERSION = "1.0.2";
+const APP_VERSION = "1.0.3";
 const STORAGE_KEY = "mass-plus-state-v2";
 const LEGACY_KEYS = ["mass-plus-mvp-v1", "mass-plus-state"];
 const DB_NAME = "mass-plus-local";
@@ -132,6 +132,7 @@ let dbPromise = null;
 let selectedPhotoFile = null;
 let selectedPhotoPreviewUrl = "";
 let photoAnalysisDraft = null;
+let savedMealEditDraft = null;
 let state = emptyState();
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -382,17 +383,18 @@ function sourceLabelFromKey(source) {
 }
 
 async function loadPersistentState() {
-  const [profileRecord, settingsRecord, entries, favorites, customFoods, cachedProducts, weights, photos] = await Promise.all([
+  const [profileRecord, settingsRecord, entries, favorites, savedMeals, customFoods, cachedProducts, weights, photos] = await Promise.all([
     idbGetOne("profile", "main"),
     idbGetOne("settings", "main"),
     idbGetAll("journalEntries"),
     idbGetAll("favorites"),
+    idbGetAll("savedMeals"),
     idbGetAll("customFoods"),
     idbGetAll("cachedProducts"),
     idbGetAll("weights"),
     idbGetAll("photoAnalyses")
   ]);
-  const hasIndexedData = Boolean(profileRecord || settingsRecord || entries.length || favorites.length || customFoods.length || cachedProducts.length || weights.length || photos.length);
+  const hasIndexedData = Boolean(profileRecord || settingsRecord || entries.length || favorites.length || savedMeals.length || customFoods.length || cachedProducts.length || weights.length || photos.length);
   if (!hasIndexedData) {
     const migrated = loadState();
     state = migrated;
@@ -403,7 +405,7 @@ async function loadPersistentState() {
   const next = emptyState();
   next.profile = { ...next.profile, ...(profileRecord?.data || {}) };
   next.entries = entries.map(normalizeEntry).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  next.favorites = favorites.map(normalizeFavorite);
+  next.favorites = mergeById(savedMeals, favorites).map(normalizeFavorite);
   next.favoriteFoodIds = Array.isArray(settingsRecord?.favoriteFoodIds) ? settingsRecord.favoriteFoodIds : [];
   next.customFoods = customFoods;
   next.offFoods = cachedProducts;
@@ -419,6 +421,7 @@ async function loadPersistentState() {
   const latest = latestWeightFrom(next);
   if (latest) next.profile.currentWeight = latest;
   state = next;
+  if (migrateSavedMealsToRecipeFavorites(state)) await persistState();
 }
 
 function loadState() {
@@ -465,6 +468,7 @@ function migrateState(saved) {
   next.pendingPhotoMeal = saved.pendingPhotoMeal || "déjeuner";
   next.migrations = saved.migrations && typeof saved.migrations === "object" ? saved.migrations : {};
   if (!next.migrations.savedMealsV1) next.migrations.savedMealsV1 = APP_VERSION;
+  migrateSavedMealsToRecipeFavorites(next);
   next.version = APP_VERSION;
   const latest = latestWeightFrom(next);
   if (latest) next.profile.currentWeight = latest;
@@ -475,8 +479,11 @@ function migrateState(saved) {
 function normalizeFavorite(favorite) {
   return {
     id: favorite.id || id(),
+    itemType: "savedMeal",
     name: favorite.name || "Favori",
     meal: favorite.meal || "collation",
+    createdAt: favorite.createdAt || new Date().toISOString(),
+    updatedAt: favorite.updatedAt || favorite.createdAt || new Date().toISOString(),
     items: (favorite.items || []).map((item) => {
       const food = findFood(item.food || item.foodId, false);
       const grams = Number(item.grams || 0);
@@ -484,6 +491,17 @@ function normalizeFavorite(favorite) {
       return { food: item.food || item.foodId, name: item.name || food?.name || "Aliment", grams, ...macros };
     })
   };
+}
+
+function migrateSavedMealsToRecipeFavorites(target) {
+  const migrationKey = "savedMealsInRecipeFavoritesV2";
+  const favorites = Array.isArray(target.favorites) ? target.favorites : [];
+  const needsNormalization = favorites.some((favorite) => favorite.itemType !== "savedMeal");
+  const firstRun = !target.migrations?.[migrationKey];
+  target.favorites = favorites.map(normalizeFavorite);
+  target.migrations = target.migrations && typeof target.migrations === "object" ? target.migrations : {};
+  target.migrations[migrationKey] = target.migrations[migrationKey] || APP_VERSION;
+  return firstRun || needsNormalization;
 }
 
 function saveState() {
@@ -880,8 +898,8 @@ function handleAddChoice(choice) {
     setTimeout(() => toast("Choisissez d’abord une photo enregistrée, puis utilisez Partager à mon IA ou Coller la réponse IA."), 240);
   }
   if (choice === "saved") {
-    go("journal");
-    setTimeout(() => $("#savedMeals")?.scrollIntoView({ block: "start", behavior: "smooth" }), 80);
+    recipesTab = "favorites";
+    go("recipes");
   }
 }
 
@@ -1197,7 +1215,7 @@ function renderHome() {
   $("#quickSnack").addEventListener("click", () => { selectedDate = today(); selectedMeal = "collation"; go("journal"); });
   $("#goWeight").addEventListener("click", () => go("weight"));
   $("#goPhoto").addEventListener("click", () => go("photo"));
-  $("#allFavorites").addEventListener("click", () => { selectedMeal = "collation"; selectedDate = today(); go("journal"); setTimeout(() => $("#savedMeals")?.scrollIntoView({ block: "start", behavior: "smooth" }), 80); });
+  $("#allFavorites").addEventListener("click", () => { recipesTab = "favorites"; go("recipes"); });
   $("#homeSearchButton").addEventListener("click", () => openHomeSearch());
   $("#quickSearch").addEventListener("click", () => openHomeSearch());
   $("#quickWater").addEventListener("click", () => addQuickDrink("eau-du-robinet"));
@@ -1262,7 +1280,7 @@ function addCoffeeExtra() {
 
 function homeFavoritesMarkup() {
   if (!state.favorites.length) {
-    return `<p class="small empty-state">Aucun favori pour le moment. Recherche un aliment ou crée un repas enregistré depuis le journal.</p>`;
+    return `<p class="small empty-state">Aucun favori pour le moment. Recherche un aliment ou enregistre un repas depuis Recettes.</p>`;
   }
   return state.favorites.slice(0, 4).map(homeFavoriteCard).join("");
 }
@@ -1323,7 +1341,6 @@ function renderJournal() {
       ${foodSearchMarkup("journal", "eau, café, pain, beurre...", bankDiscoveryMarkup())}
       <details class="manual-food"><summary>Créer un aliment manuellement</summary>${manualFoodMarkup()}</details>
     </article>
-    ${savedMealsSection()}
     <article class="card">
       <h2>Repas de la journée sélectionnée</h2>
       <div class="date-nav" aria-label="Navigation par jour">
@@ -1338,7 +1355,6 @@ function renderJournal() {
   bindFoodSearch("journal", (food, grams) => addEntry(food, grams, selectedMeal));
   bindBankDiscovery();
   bindManualFoodForm();
-  bindSavedMeals();
   bindEntryButtons();
 }
 
@@ -1390,28 +1406,6 @@ function historyRow(date, goals) {
     <span><strong>${esc(dateLabel(date))}</strong><small>${esc(date)} · ${entries.length} entrée(s) · ${meals} repas</small></span>
     <span><strong>${fmt(sum.kcal)} / ${fmt(goals.calories)} kcal</strong><small>${fmt(sum.protein, 1)} / ${fmt(goals.protein)} g prot. · ${fmt(Math.max(caloriePct, proteinPct))}%</small></span>
   </button>`;
-}
-
-function savedMealsSection() {
-  return `<article class="card saved-meals-card" id="savedMeals">
-    <div class="section-head">
-      <div>
-        <h2>Repas enregistrés</h2>
-        <p class="small">Les anciens favoris sont conservés ici.</p>
-      </div>
-    </div>
-    <form id="savedMealForm" class="form-grid saved-meal-form">
-      <label>Nom du repas<input name="name" placeholder="Petit déjeuner habituel"></label>
-      <label>Repas<select name="meal">${MEALS.map((meal) => `<option ${meal === selectedMeal ? "selected" : ""}>${esc(meal)}</option>`).join("")}</select></label>
-      <button class="secondary-button">Créer depuis le journal</button>
-    </form>
-    <div class="stack saved-meals-list">${state.favorites.length ? state.favorites.map(favoriteEditor).join("") : `<p class="small">Aucun repas enregistré pour le moment.</p>`}</div>
-  </article>`;
-}
-
-function bindSavedMeals() {
-  $("#savedMealForm")?.addEventListener("submit", saveFavoriteFromMeal);
-  bindFavoriteEditors();
 }
 
 function bindMealTabs() {
@@ -1874,6 +1868,145 @@ function renderAfterSavedMealChange() {
   else render();
 }
 
+function openSavedMealCreator() {
+  closeSavedMealModal();
+  const overlay = document.createElement("div");
+  overlay.id = "savedMealModal";
+  overlay.className = "sheet-overlay";
+  overlay.innerHTML = `<div class="add-sheet saved-meal-modal" role="dialog" aria-modal="true" aria-labelledby="savedMealCreateTitle">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <div class="section-head"><h2 id="savedMealCreateTitle">Enregistrer un repas du journal</h2><button class="sheet-close" type="button" aria-label="Fermer" data-close-saved-meal>×</button></div>
+    <p class="small">Les aliments du repas choisi pour ${esc(dateLabel(selectedDate || today()))} seront enregistrés.</p>
+    <form id="savedMealCreateForm" class="form-grid">
+      <label>Nom du repas<input name="name" placeholder="Petit déjeuner habituel" required></label>
+      <label>Type de repas<select name="meal">${MEALS.map((meal) => `<option ${meal === selectedMeal ? "selected" : ""}>${esc(meal)}</option>`).join("")}</select></label>
+      <button class="primary-button wide">Enregistrer le repas</button>
+    </form>
+  </div>`;
+  document.body.appendChild(overlay);
+  $("#savedMealCreateForm")?.addEventListener("submit", saveSavedMealFromJournal);
+  $$('[data-close-saved-meal]').forEach((button) => button.addEventListener("click", closeSavedMealModal));
+  overlay.addEventListener("click", (event) => { if (event.target === overlay) closeSavedMealModal(); });
+  $("#savedMealCreateForm [name='name']")?.focus();
+}
+
+function saveSavedMealFromJournal(event) {
+  event.preventDefault();
+  const data = Object.fromEntries(new FormData(event.currentTarget));
+  const mealItems = dayEntries().filter((entry) => entry.meal === data.meal);
+  const savedMeal = normalizeFavorite({
+    id: id(),
+    itemType: "savedMeal",
+    name: data.name.trim() || `Repas ${data.meal}`,
+    meal: data.meal,
+    items: mealItems.map((entry) => ({ food: entry.foodId, name: entry.name, grams: entry.grams, kcal: entry.kcal, protein: entry.protein, carbs: entry.carbs, fat: entry.fat }))
+  });
+  state.favorites.unshift(savedMeal);
+  saveState();
+  closeSavedMealModal();
+  recipesTab = "favorites";
+  renderRecipes();
+  toast(mealItems.length ? "Repas enregistré." : "Repas vide enregistré. Utilisez Modifier pour ajouter des aliments.");
+}
+
+function openSavedMealEditor(savedMealId) {
+  const savedMeal = state.favorites.find((item) => item.id === savedMealId);
+  if (!savedMeal) return;
+  savedMealEditDraft = normalizeFavorite({ ...savedMeal, items: savedMeal.items.map((item) => ({ ...item })) });
+  renderSavedMealEditor();
+}
+
+function renderSavedMealEditor() {
+  if (!savedMealEditDraft) return;
+  $("#savedMealModal")?.remove();
+  const overlay = document.createElement("div");
+  overlay.id = "savedMealModal";
+  overlay.className = "sheet-overlay";
+  overlay.innerHTML = `<div class="add-sheet saved-meal-modal saved-meal-editor" role="dialog" aria-modal="true" aria-labelledby="savedMealEditTitle">
+    <div class="sheet-handle" aria-hidden="true"></div>
+    <div class="section-head"><h2 id="savedMealEditTitle">Modifier le repas</h2><button class="sheet-close" type="button" aria-label="Fermer" data-close-saved-meal>×</button></div>
+    <form id="savedMealEditForm" class="form-grid">
+      <label>Nom<input name="name" value="${esc(savedMealEditDraft.name)}" required></label>
+      <label>Type de repas<select name="meal">${MEALS.map((meal) => `<option ${meal === savedMealEditDraft.meal ? "selected" : ""}>${esc(meal)}</option>`).join("")}</select></label>
+      <div class="stack saved-meal-edit-items">${savedMealEditDraft.items.map(savedMealEditItemRow).join("") || `<p class="small">Aucun aliment pour le moment.</p>`}</div>
+      <div class="saved-meal-edit-search"><h3>Ajouter un aliment</h3>${foodSearchMarkup("savedMealEditor", "pain, lait, banane...")}</div>
+      <div class="inline-actions"><button class="secondary-button" type="button" data-close-saved-meal>Annuler</button><button class="primary-button" type="submit">Enregistrer</button></div>
+    </form>
+  </div>`;
+  document.body.appendChild(overlay);
+  $("#savedMealEditForm")?.addEventListener("submit", saveSavedMealEditor);
+  $$('[data-close-saved-meal]').forEach((button) => button.addEventListener("click", closeSavedMealModal));
+  $$('[data-remove-saved-meal-item]').forEach((button) => button.addEventListener("click", () => {
+    syncSavedMealEditDraft();
+    savedMealEditDraft.items.splice(Number(button.dataset.removeSavedMealItem), 1);
+    renderSavedMealEditor();
+  }));
+  bindFoodSearch("savedMealEditor", (food, grams) => {
+    syncSavedMealEditDraft();
+    savedMealEditDraft.items.push({ food: food.id, name: food.name, grams, ...calc(food, grams) });
+    renderSavedMealEditor();
+  });
+  overlay.addEventListener("click", (event) => { if (event.target === overlay) closeSavedMealModal(); });
+}
+
+function savedMealEditItemRow(item, index) {
+  const food = findFood(item.food);
+  const macros = food ? calc(food, item.grams) : item;
+  return `<div class="saved-meal-edit-row">
+    <div><strong>${esc(item.name || food?.name || "Aliment")}</strong><div class="macro">${fmt(macros.kcal)} kcal · ${fmt(macros.protein, 1)} g prot.</div></div>
+    <label class="unit-field"><input value="${esc(item.grams)}" inputmode="decimal" data-saved-edit-grams="${index}" aria-label="Quantité ${esc(item.name || food?.name || "aliment")}"><span>g</span></label>
+    <button class="danger-button compact" data-remove-saved-meal-item="${index}" type="button">Supprimer</button>
+  </div>`;
+}
+
+function syncSavedMealEditDraft() {
+  if (!savedMealEditDraft) return;
+  const form = $("#savedMealEditForm");
+  if (form) {
+    savedMealEditDraft.name = form.elements.name.value.trim() || savedMealEditDraft.name;
+    savedMealEditDraft.meal = form.elements.meal.value;
+  }
+  savedMealEditDraft.items = savedMealEditDraft.items.map((item, index) => {
+    const grams = Number($(`[data-saved-edit-grams="${index}"]`)?.value || item.grams);
+    return Number.isFinite(grams) && grams > 0 ? scaleSavedMealItem(item, grams) : item;
+  });
+}
+
+function scaleSavedMealItem(item, grams) {
+  const food = findFood(item.food);
+  if (food) return { ...item, grams, ...calc(food, grams) };
+  const factor = Number(item.grams || 0) > 0 ? grams / Number(item.grams) : 1;
+  return {
+    ...item,
+    grams,
+    kcal: Number(item.kcal || 0) * factor,
+    protein: Number(item.protein || 0) * factor,
+    carbs: Number(item.carbs || 0) * factor,
+    fat: Number(item.fat || 0) * factor
+  };
+}
+
+function saveSavedMealEditor(event) {
+  event.preventDefault();
+  syncSavedMealEditDraft();
+  if (!savedMealEditDraft?.name.trim()) {
+    toast("Ajoutez un nom au repas.");
+    return;
+  }
+  const index = state.favorites.findIndex((item) => item.id === savedMealEditDraft.id);
+  if (index < 0) return;
+  state.favorites[index] = normalizeFavorite({ ...savedMealEditDraft, updatedAt: new Date().toISOString() });
+  saveState();
+  closeSavedMealModal();
+  renderRecipes();
+  toast("Repas enregistré mis à jour.");
+}
+
+function closeSavedMealModal() {
+  $("#savedMealModal")?.remove();
+  savedMealEditDraft = null;
+}
+
 function renderWeight() {
   const latest = latestWeight();
   const previous = state.weights.length > 1 ? [...state.weights].sort((a, b) => b.date.localeCompare(a.date))[1]?.weight : null;
@@ -2113,6 +2246,8 @@ function toggleRecipeFavorite(recipeId) {
 
 function renderRecipes() {
   const list = filteredRecipes();
+  const savedMeals = recipesTab === "favorites" ? state.favorites : [];
+  const favoriteCount = list.length + savedMeals.length;
   $("#screen").innerHTML = `<article class="card">
     <div class="section-head"><h2>Recettes</h2><button class="ghost-inline" data-go="home">Journal</button></div>
     <div class="tabs sub-tabs">
@@ -2122,7 +2257,7 @@ function renderRecipes() {
     </div>
     ${recipesTab === "tips"
       ? `<p class="small">Astuces déjà présentes dans Mass+.</p><div class="stack">${tips.map(tipCard).join("")}</div>`
-      : `<p class="small">${list.length} recette(s) ${recipesTab === "favorites" ? "favorite(s)" : "compatibles avec le profil"}.</p><div class="stack">${list.map(recipeCard).join("") || `<p class="small">Aucune recette favorite pour le moment.</p>`}</div>`}
+      : `${recipesTab === "favorites" ? `<div class="favorites-toolbar"><p class="small">${favoriteCount} favori(s) : recettes et repas enregistrés.</p><button id="createSavedMeal" class="secondary-button compact" type="button">Enregistrer un repas</button></div>` : `<p class="small">${list.length} recette(s) compatibles avec le profil.</p>`}<div class="stack">${list.map(recipeCard).join("")}${savedMeals.map(savedMealCard).join("")}${recipesTab === "favorites" && !favoriteCount ? `<p class="small empty-state">Aucun favori pour le moment.</p>` : ""}</div>`}
   </article>`;
   $$('[data-go]').forEach((button) => button.addEventListener("click", () => go(button.dataset.go)));
   $$('[data-recipes-tab]').forEach((button) => button.addEventListener("click", () => {
@@ -2130,6 +2265,7 @@ function renderRecipes() {
     renderRecipes();
   }));
   bindRecipeButtons();
+  bindSavedMealCards();
   renderRecipePhotoThumbs();
 }
 
@@ -2144,10 +2280,82 @@ function recipeCard(recipe) {
   const cost = recipe.cost || recipe.budget || "";
   const favorite = isRecipeFavorite(recipe.id);
   return `<div class="recipe-card">
-    <div class="recipe-card-head">${recipeImageMarkup(recipe)}<div><strong>${esc(recipe.name)}</strong><div class="macro">${esc(duration)} · ${esc(difficulty)} ${cost ? `· ${esc(cost)} ` : ""}· ${fmt(recipe.kcal)} kcal · ${fmt(recipe.protein)} g prot.</div></div><button class="heart-button ${favorite ? "active" : ""}" data-recipe-heart="${recipe.id}" type="button" aria-label="${favorite ? "Retirer des favorites" : "Ajouter aux favorites"}">♥</button></div>
+    <div class="recipe-card-head">${recipeImageMarkup(recipe)}<div><span class="item-type-badge">Recette</span><strong class="item-card-title">${esc(recipe.name)}</strong><div class="macro">${esc(duration)} · ${esc(difficulty)} ${cost ? `· ${esc(cost)} ` : ""}· ${fmt(recipe.kcal)} kcal · ${fmt(recipe.protein)} g prot.</div></div><button class="heart-button ${favorite ? "active" : ""}" data-recipe-heart="${recipe.id}" type="button" aria-label="${favorite ? "Retirer des favorites" : "Ajouter aux favorites"}">♥</button></div>
     <details><summary>Voir les ingrédients</summary>${recipeImageMarkup({ ...recipe, id: `${recipe.id}-detail`, name: recipe.name, category: "aperçu" })}<ul>${(recipe.ingredients || []).map((item) => `<li>${esc(item)}</li>`).join("")}</ul><ol>${(recipe.steps || []).map((step) => `<li>${esc(step)}</li>`).join("")}</ol></details>
     <div class="recipe-controls"><label>Portions<input inputmode="decimal" value="1" data-recipe-portions="${recipe.id}"></label><button class="primary-button compact" data-recipe-journal="${recipe.id}">Ajouter</button><label class="secondary-button compact recipe-photo-button">Photo<input type="file" accept="image/*" data-recipe-photo="${recipe.id}"></label>${state.recipePhotos?.[recipe.id] ? `<button class="danger-button compact" data-delete-recipe-photo="${recipe.id}">Suppr. photo</button>` : ""}</div>
   </div>`;
+}
+
+function savedMealCard(savedMeal) {
+  const sum = favoriteTotals(savedMeal);
+  return `<div class="recipe-card saved-meal-card" data-saved-meal-card="${esc(savedMeal.id)}">
+    <div class="saved-meal-card-head">
+      <div><span class="item-type-badge saved-meal-badge">Repas enregistré</span><strong class="item-card-title">${esc(savedMeal.name)}</strong><div class="macro">${fmt(sum.kcal)} kcal · ${fmt(sum.protein, 1)} g prot.</div><div class="macro saved-meal-type">${esc(savedMeal.meal)}</div></div>
+      <details class="saved-meal-menu"><summary aria-label="Actions pour ${esc(savedMeal.name)}">⋯</summary><div class="saved-meal-menu-actions"><button type="button" data-edit-saved-meal="${esc(savedMeal.id)}">Modifier</button><button type="button" class="danger-text" data-delete-saved-meal="${esc(savedMeal.id)}">Supprimer</button></div></details>
+    </div>
+    <details class="saved-meal-details"><summary>Voir les aliments</summary><ul>${savedMeal.items.length ? savedMeal.items.map(savedMealItemMarkup).join("") : `<li>Ce repas ne contient encore aucun aliment.</li>`}</ul></details>
+    <div class="recipe-controls"><label>Portions<input inputmode="decimal" value="1" min="0.1" step="0.1" data-saved-meal-portions="${esc(savedMeal.id)}"></label><button class="primary-button compact" type="button" data-add-saved-meal="${esc(savedMeal.id)}">Ajouter</button></div>
+  </div>`;
+}
+
+function savedMealItemMarkup(item) {
+  const food = findFood(item.food);
+  const macros = food ? calc(food, item.grams) : item;
+  return `<li><strong>${esc(item.name || food?.name || "Aliment")}</strong> · ${fmt(item.grams)} g · ${fmt(macros.kcal)} kcal · ${fmt(macros.protein, 1)} g prot.</li>`;
+}
+
+function bindSavedMealCards() {
+  $("#createSavedMeal")?.addEventListener("click", openSavedMealCreator);
+  $$('[data-add-saved-meal]').forEach((button) => button.addEventListener("click", () => addSavedMealToJournal(button.dataset.addSavedMeal)));
+  $$('[data-edit-saved-meal]').forEach((button) => button.addEventListener("click", () => openSavedMealEditor(button.dataset.editSavedMeal)));
+  $$('[data-delete-saved-meal]').forEach((button) => button.addEventListener("click", () => deleteSavedMeal(button.dataset.deleteSavedMeal)));
+}
+
+function savedMealPortions(savedMealId) {
+  const value = Number($(`[data-saved-meal-portions="${savedMealId}"]`)?.value || 1);
+  return Number.isFinite(value) && value > 0 ? value : 1;
+}
+
+function addSavedMealToJournal(savedMealId) {
+  const savedMeal = state.favorites.find((item) => item.id === savedMealId);
+  if (!savedMeal) return;
+  if (!savedMeal.items.length) {
+    toast("Ce repas enregistré est vide.");
+    return;
+  }
+  const portions = savedMealPortions(savedMealId);
+  savedMeal.items.forEach((item) => {
+    const food = findFood(item.food) || savedMealItemAsFood(item);
+    addEntry(food, Number(item.grams) * portions, savedMeal.meal, false);
+  });
+  saveState();
+  selectedMeal = savedMeal.meal;
+  toast("Repas ajouté au journal.");
+}
+
+function savedMealItemAsFood(item) {
+  const grams = Number(item.grams || 0) || 1;
+  const factor = 100 / grams;
+  return {
+    id: item.food || `saved-meal-item-${id()}`,
+    name: item.name || "Aliment enregistré",
+    source: "Repas enregistré",
+    kcalPer100g: Number(item.kcal || 0) * factor,
+    proteinPer100g: Number(item.protein || 0) * factor,
+    carbsPer100g: Number(item.carbs || 0) * factor,
+    fatPer100g: Number(item.fat || 0) * factor,
+    defaultPortionG: grams,
+    unit: "g"
+  };
+}
+
+function deleteSavedMeal(savedMealId) {
+  const savedMeal = state.favorites.find((item) => item.id === savedMealId);
+  if (!savedMeal || !confirm(`Supprimer le repas enregistré "${savedMeal.name}" ? Les entrées déjà ajoutées au journal seront conservées.`)) return;
+  state.favorites = state.favorites.filter((item) => item.id !== savedMealId);
+  saveState();
+  renderRecipes();
+  toast("Repas enregistré supprimé.");
 }
 
 function bindRecipeButtons() {
