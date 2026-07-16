@@ -1,6 +1,6 @@
 {
   "name": "mass-plus-github-pages",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "private": true,
   "description": "PWA statique MASS PLUS locale/offline prête pour GitHub Pages",
   "scripts": {

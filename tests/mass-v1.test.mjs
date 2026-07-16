@@ -4,6 +4,17 @@ import vm from "node:vm";
 const app = fs.readFileSync(new URL("../app.js", import.meta.url), "utf8").replace(/\ninit\(\);\s*$/, "");
 const foods = JSON.parse(fs.readFileSync(new URL("../data/aliments-fr.json", import.meta.url), "utf8"));
 
+for (const expected of [
+  "Dicter mon repas",
+  "window.SpeechRecognition || window.webkitSpeechRecognition",
+  'voiceRecognition.lang = "fr-FR"',
+  "Je vous écoute… Décrivez votre repas.",
+  "Analyser mon repas avec l’IA",
+  "navigator.share"
+]) {
+  if (!app.includes(expected)) throw new Error(`Parcours vocal manquant dans app.js : ${expected}`);
+}
+
 const testCode = `
 baseFoods = ${JSON.stringify(foods)}.map(normalizeFoodRecord);
 state = emptyState();
@@ -174,4 +185,4 @@ const context = {
 };
 
 vm.runInNewContext(`${app}\n${testCode}`, context, { timeout: 5000 });
-console.log("Tests Mass+ V1.2.0 OK");
+console.log("Tests Mass+ V1.2.1 OK");

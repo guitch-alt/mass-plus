@@ -1,6 +1,6 @@
 "use strict";
 
-const APP_VERSION = "1.2.0";
+const APP_VERSION = "1.2.1";
 const STORAGE_KEY = "mass-plus-state-v2";
 const LEGACY_KEYS = ["mass-plus-mvp-v1", "mass-plus-state"];
 const DB_NAME = "mass-plus-local";
@@ -969,7 +969,7 @@ function openAddSheet() {
       </div>
       <p class="sheet-intro">Comment veux-tu ajouter ton repas ?</p>
       <button class="sheet-choice sheet-choice-primary" type="button" data-add-choice="voice">
-        <span class="sheet-choice-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M9 21h6"/></svg></span>
+        <span class="sheet-choice-icon" aria-hidden="true">🎙️</span>
         <span class="sheet-choice-copy"><strong>Dicter mon repas</strong><small>Le plus rapide · parle naturellement</small></span>
       </button>
       <button class="sheet-choice" type="button" data-add-choice="photo">
@@ -1076,11 +1076,11 @@ function openVoiceDictation(options = {}) {
       </button>
     </div>` : ""}
     <p class="voice-status ${supported ? "" : "voice-unavailable"}" id="voiceStatus" role="status" aria-live="polite">${supported ? "Appuie sur le micro puis décris ton repas." : "La dictée vocale n’est pas disponible ici. Décris simplement ton repas ci-dessous."}</p>
-    <label for="voiceTranscript">${supported ? "Transcription" : "Décris ton repas"}</label>
+    <label id="voiceTranscriptLabel" for="voiceTranscript">${supported ? "Transcription" : "Décris ton repas"}</label>
     <textarea id="voiceTranscript" placeholder="Ex. : Ce midi, j’ai mangé deux tartines avec du beurre, un skyr et une banane…" autocomplete="off"></textarea>
     <p class="voice-edit-hint">Tu peux corriger le texte avant de le partager.</p>
     <div class="voice-actions">
-      <button class="primary-button wide" id="analyzeVoiceMeal" type="button" disabled>Analyser avec mon IA</button>
+      <button class="primary-button wide" id="analyzeVoiceMeal" type="button" disabled>Analyser mon repas avec l’IA</button>
       <button class="secondary-button wide" id="voiceImportButton" type="button" hidden>Coller la réponse IA</button>
     </div>
     <div id="voiceSharePanel"></div>
@@ -1202,6 +1202,11 @@ function handleVoiceRecognitionError(event) {
   };
   setVoiceStatus(messages[event.error] || "La dictée s’est interrompue. Tu peux réessayer ou écrire ton repas.", true);
   setVoiceListeningState(false);
+  if (["not-allowed", "service-not-allowed", "audio-capture", "language-not-supported", "network"].includes(event.error)) {
+    const label = $("#voiceTranscriptLabel");
+    if (label) label.textContent = "Décris ton repas";
+    $("#voiceTranscript")?.focus();
+  }
 }
 
 function setVoiceListeningState(listening) {
@@ -1214,7 +1219,11 @@ function setVoiceListeningState(listening) {
   if (button) button.setAttribute("aria-pressed", String(listening));
   if (label) label.textContent = listening ? "Arrêter la dictée" : "Démarrer la dictée";
   if (transcript) transcript.readOnly = listening;
-  if (listening) setVoiceStatus("Écoute en cours… parle naturellement.");
+  if (listening) {
+    const transcriptLabel = $("#voiceTranscriptLabel");
+    if (transcriptLabel) transcriptLabel.textContent = "Transcription";
+    setVoiceStatus("Je vous écoute… Décrivez votre repas.");
+  }
 }
 
 function setVoiceStatus(message, isError = false) {
@@ -1258,7 +1267,8 @@ async function shareVoiceWithAi() {
   $("#voiceImportButton").hidden = false;
 
   if (!navigator.share) {
-    renderVoiceShareFallback(prompt);
+    const copied = await copyTextToClipboard(prompt);
+    renderVoiceShareFallback(prompt, copied);
     return;
   }
   try {
@@ -1271,7 +1281,8 @@ async function shareVoiceWithAi() {
       return;
     }
     console.info("Native voice share unavailable", { name: error?.name, message: error?.message });
-    renderVoiceShareFallback(prompt);
+    const copied = await copyTextToClipboard(prompt);
+    renderVoiceShareFallback(prompt, copied);
   }
 }
 
@@ -1286,8 +1297,10 @@ function renderVoiceShareReturn() {
   $("#voiceReturnImport").addEventListener("click", () => openAiImportModal(voiceAnalysisMeta));
 }
 
-function renderVoiceShareFallback(prompt) {
-  setVoiceStatus("Le partage n’est pas disponible. Copie le prompt et colle-le dans ton IA.", true);
+function renderVoiceShareFallback(prompt, copied = false) {
+  setVoiceStatus(copied
+    ? "Prompt copié. Ouvre ton IA, colle-le et envoie-le."
+    : "Le partage n’est pas disponible. Copie le prompt et colle-le dans ton IA.", !copied);
   const panel = $("#voiceSharePanel");
   if (!panel) return;
   panel.innerHTML = `<div class="voice-share-note voice-share-fallback">
@@ -1299,7 +1312,7 @@ function renderVoiceShareFallback(prompt) {
       <button class="primary-button" id="copyVoicePrompt" type="button">Copier le prompt</button>
       <button class="secondary-button" id="voiceFallbackImport" type="button">Coller la réponse IA</button>
     </div>
-    <p class="small" id="voiceCopyStatus" role="status"></p>
+    <p class="small" id="voiceCopyStatus" role="status">${copied ? "Prompt copié automatiquement dans le presse-papiers." : ""}</p>
   </div>`;
   $("#voicePromptFallback").value = prompt;
   $("#copyVoicePrompt").addEventListener("click", async () => {
@@ -4115,7 +4128,16 @@ async function init() {
   render();
   $("#installHelp").addEventListener("click", () => toast("iPhone Safari : Partager puis Ajouter à l’écran d’accueil. Android Chrome : Installer l’application."));
   if ("serviceWorker" in navigator) {
-    const registerServiceWorker = () => navigator.serviceWorker.register("./service-worker.js").catch(() => undefined);
+    let refreshingForUpdate = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (refreshingForUpdate) return;
+      refreshingForUpdate = true;
+      location.reload();
+    });
+    const registerServiceWorker = () => navigator.serviceWorker
+      .register("./service-worker.js?v=1.2.1", { updateViaCache: "none" })
+      .then((registration) => registration.update())
+      .catch(() => undefined);
     if (document.readyState === "complete") registerServiceWorker();
     else window.addEventListener("load", registerServiceWorker, { once: true });
   }

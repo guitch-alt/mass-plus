@@ -1,4 +1,4 @@
-# Mass+ V1.2.0
+# Mass+ V1.2.1
 
 Mass+ est une PWA mobile-first gratuite pour suivre les repas, calories, protéines et l’évolution du poids. Elle fonctionne sur GitHub Pages, sans compte et sans backend obligatoire.
 

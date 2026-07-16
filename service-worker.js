@@ -1,9 +1,9 @@
-const CACHE_NAME = "mass-plus-v1-2-0";
+const CACHE_NAME = "mass-plus-v1-2-1";
 const ASSETS = [
   "./",
   "./index.html",
-  "./style.css",
-  "./app.js",
+  "./style.css?v=1.2.1",
+  "./app.js?v=1.2.1",
   "./vendor/zxing-browser.min.js",
   "./manifest.json",
   "./data/aliments-fr.json",
@@ -32,6 +32,25 @@ self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin) return;
+
+  const networkFirst = event.request.mode === "navigate" || ["document", "script", "style"].includes(event.request.destination);
+  if (networkFirst) {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          if (response.ok) {
+            const copy = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+          }
+          return response;
+        })
+        .catch(async () => {
+          const cached = await caches.match(event.request);
+          return cached || caches.match("./index.html");
+        })
+    );
+    return;
+  }
 
   event.respondWith(
     caches.match(event.request).then((cached) => {
