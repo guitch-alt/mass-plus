@@ -1,4 +1,4 @@
-# Mass+ V1.1.0
+# Mass+ V1.2.0
 
 Mass+ est une PWA mobile-first gratuite pour suivre les repas, calories, protéines et l’évolution du poids. Elle fonctionne sur GitHub Pages, sans compte et sans backend obligatoire.
 
@@ -11,7 +11,7 @@ Application publique : https://guitch-alt.github.io/mass-plus/
 - Repas enregistrés regroupés dans **Recettes > Mes favorites**, avec portions, modification et ajout direct au journal.
 - Sauvegarde JSON versionnée et restauration validée avec transaction locale et rollback.
 - Journal fiabilisé avec dates locales, journées non suivies, calories restantes et écritures IndexedDB sérialisées.
-- Ajout central simplifié : photo, scanner, recherche d’aliment ou repas favori.
+- Ajout central simplifié : dictée express prioritaire, photo ou saisie manuelle, avec scanner et repas enregistrés en options secondaires.
 - Open Food Facts utilisé uniquement après une recherche en ligne ou un scan demandé par l’utilisateur.
 - Scanner compatible iPhone et Android grâce à ZXing, avec caméra arrière et saisie manuelle de secours.
 - PWA installable, cache hors ligne et interface adaptée aux safe areas iPhone.
@@ -24,6 +24,14 @@ La base locale contient des aliments français courants : légumes, fruits, cond
 La Banque n’affiche jamais tout le catalogue au chargement : elle montre seulement les aliments favoris et récemment utilisés, puis jusqu’à 20 résultats après une recherche. La recherche locale ignore accents, majuscules, apostrophes, singulier/pluriel, accepte les recherches partielles et quelques fautes simples. Exemples : `oeufs`, `tomates`, `concom`, `balsamique`, `haricot rouge`.
 
 Lors d’un import IA, Mass+ réutilise un aliment local correspondant sans écraser la quantité ni les valeurs estimées pour le repas. Un aliment inconnu reste temporaire tant que l’utilisateur ne choisit pas explicitement de l’ajouter à sa banque personnelle.
+
+## Dictée express
+
+Depuis l’action centrale **Ajouter**, **Dicter mon repas** démarre la reconnaissance vocale native en français lorsqu’elle est disponible. La transcription apparaît en direct et reste modifiable avant le partage.
+
+Mass+ n’enregistre pas la dictée et n’appelle aucune API payante. La reconnaissance dépend du service vocal fourni par le navigateur. Si ce service est absent ou si l’accès au microphone est refusé, le même écran propose immédiatement le champ **Décris ton repas**.
+
+Le bouton **Analyser avec mon IA** ouvre la feuille de partage avec un prompt texte prêt à envoyer. Mass+ ne peut pas ouvrir automatiquement une application IA connectée, envoyer le message ou récupérer sa réponse : l’utilisatrice choisit son application, envoie le prompt, puis revient coller le JSON dans Mass+.
 
 ## Photos et IA
 

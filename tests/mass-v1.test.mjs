@@ -80,6 +80,16 @@ assert(ambiguousRejected, "Un import IA ambigu devrait être refusé");
 const fallback = parseNutritionTextFallback("Banane — 120 g — 105 kcal — 1,3 g protéines — 27 g glucides — 0,4 g lipides");
 assert(fallback.foods[0].name === "Banane" && fallback.foods[0].kcal === 105, "Fallback texte échoué");
 
+const voiceDescription = "Deux tartines avec du beurre, un skyr et une banane.";
+const voicePrompt = buildVoiceAiPrompt(voiceDescription);
+assert(voicePrompt.includes(voiceDescription), "La dictée manque dans le prompt vocal");
+assert(voicePrompt.includes("unique objet JSON valide"), "Le prompt vocal ne demande pas un JSON unique");
+assert(voicePrompt.includes("N'invente aucun aliment"), "Le prompt vocal autorise des aliments inventés");
+assert(voicePrompt.includes("estimation raisonnable et prudente"), "Le prompt vocal ne gère pas les quantités imprécises");
+for (const field of ["mealName", "foods", "quantity", "calories", "protein", "carbohydrates", "fat", "totals", "uncertainties"]) {
+  assert(voicePrompt.includes('"' + field + '"'), "Champ JSON vocal manquant : " + field);
+}
+
 const legacyMeal = {
   id: "legacy-test",
   name: "Test",
@@ -164,4 +174,4 @@ const context = {
 };
 
 vm.runInNewContext(`${app}\n${testCode}`, context, { timeout: 5000 });
-console.log("Tests Mass+ V1.1.0 OK");
+console.log("Tests Mass+ V1.2.0 OK");

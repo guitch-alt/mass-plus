@@ -1,6 +1,6 @@
 "use strict";
 
-const APP_VERSION = "1.1.0";
+const APP_VERSION = "1.2.0";
 const STORAGE_KEY = "mass-plus-state-v2";
 const LEGACY_KEYS = ["mass-plus-mvp-v1", "mass-plus-state"];
 const DB_NAME = "mass-plus-local";
@@ -84,6 +84,53 @@ Format exact :
 Si la photo est ambiguë, indique-le uniquement dans « uncertainties ».
 
 Ne renvoie jamais systématiquement les mêmes aliments.`;
+function buildVoiceAiPrompt(transcript) {
+  return `Convertis la description de repas ci-dessous pour l'application Mass+.
+
+DESCRIPTION DU REPAS (source unique) :
+---
+${String(transcript || "").trim()}
+---
+
+Identifie uniquement les aliments et boissons mentionnés dans cette description.
+N'invente aucun aliment, ingrédient, accompagnement, quantité ou détail qui n'est pas mentionné.
+
+Pour chaque aliment ou boisson, estime :
+- le nom en français ;
+- la quantité en grammes ou en unités ;
+- les calories ;
+- les protéines en grammes ;
+- les glucides en grammes ;
+- les lipides en grammes.
+
+Si une quantité est imprécise, fais une estimation raisonnable et prudente, puis signale-la dans "uncertainties".
+Donne également le total du repas.
+
+Réponds uniquement avec un unique objet JSON valide, sans Markdown et sans texte avant ou après, en respectant exactement ce format :
+
+{
+  "mealName": "Nom du repas",
+  "foods": [
+    {
+      "name": "Nom de l'aliment",
+      "quantity": "Quantité estimée",
+      "calories": 0,
+      "protein": 0,
+      "carbohydrates": 0,
+      "fat": 0
+    }
+  ],
+  "totals": {
+    "calories": 0,
+    "protein": 0,
+    "carbohydrates": 0,
+    "fat": 0
+  },
+  "uncertainties": "Éléments éventuels à confirmer"
+}
+
+Toutes les valeurs nutritionnelles doivent être numériques. Crée une ligne par aliment ou boisson mentionné. N'ajoute aucune information absente de la description.`;
+}
 const SEARCH_ALIASES = {
   "sucre en morceau": ["sucre en morceaux", "sucre blanc"],
   "morceau de sucre": ["sucre en morceaux", "sucre blanc"],
@@ -136,6 +183,11 @@ let persistQueue = Promise.resolve();
 let selectedPhotoFile = null;
 let selectedPhotoPreviewUrl = "";
 let photoAnalysisDraft = null;
+let voiceRecognition = null;
+let voiceListening = false;
+let voiceSessionPrefix = "";
+let voiceRecognitionHadError = false;
+let voiceAnalysisMeta = null;
 let savedMealEditDraft = null;
 let pendingBackupRestore = null;
 let recipeFilter = "all";
@@ -915,11 +967,23 @@ function openAddSheet() {
         <h2 id="addSheetTitle">Ajouter</h2>
         <button class="sheet-close" type="button" aria-label="Fermer" data-close-sheet>×</button>
       </div>
-      <button class="sheet-choice primary-choice" type="button" data-add-choice="photo"><span>1</span>Prendre une photo</button>
-      <button class="sheet-choice primary-choice" type="button" data-add-choice="scan"><span>2</span>Scanner un produit</button>
-      <button class="sheet-choice" type="button" data-add-choice="food"><span>3</span>Rechercher un aliment</button>
-      <button class="sheet-choice" type="button" data-add-choice="saved"><span>4</span>Ajouter un repas favori</button>
-      <p class="small add-sheet-help">La saisie manuelle reste disponible dans la Banque.</p>
+      <p class="sheet-intro">Comment veux-tu ajouter ton repas ?</p>
+      <button class="sheet-choice sheet-choice-primary" type="button" data-add-choice="voice">
+        <span class="sheet-choice-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M9 21h6"/></svg></span>
+        <span class="sheet-choice-copy"><strong>Dicter mon repas</strong><small>Le plus rapide · parle naturellement</small></span>
+      </button>
+      <button class="sheet-choice" type="button" data-add-choice="photo">
+        <span class="sheet-choice-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7.5h3l1.2-2h7.6l1.2 2h3v12H4Z"/><circle cx="12" cy="13" r="3.2"/></svg></span>
+        <span class="sheet-choice-copy"><strong>Prendre / choisir une photo</strong><small>Partager ensuite avec ton IA</small></span>
+      </button>
+      <button class="sheet-choice" type="button" data-add-choice="manual">
+        <span class="sheet-choice-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m5 16 10.7-10.7a1.8 1.8 0 0 1 2.6 0l.4.4a1.8 1.8 0 0 1 0 2.6L8 19H5Z"/><path d="m14.5 6.5 3 3"/></svg></span>
+        <span class="sheet-choice-copy"><strong>Ajouter manuellement</strong><small>Créer un aliment dans la Banque</small></span>
+      </button>
+      <div class="sheet-secondary-actions" aria-label="Autres options">
+        <button type="button" data-add-choice="saved">Repas enregistré</button>
+        <button type="button" data-add-choice="scan">Scanner un code-barres</button>
+      </div>
       <p class="sheet-status" id="addSheetStatus" role="status"></p>
     </div>`;
   document.body.appendChild(overlay);
@@ -948,6 +1012,9 @@ function handleAddChoice(choice) {
   }
   history.replaceState(null, "", location.href);
   closeAddSheet({ keepHistory: true });
+  if (choice === "voice") {
+    openVoiceDictation({ autoStart: true });
+  }
   if (choice === "food") {
     selectedMeal = selectedMeal || "petit déjeuner";
     go("journal");
@@ -973,6 +1040,287 @@ function handleAddChoice(choice) {
 }
 
 window.addEventListener("popstate", () => closeAddSheet({ fromHistory: true }));
+
+function voiceRecognitionConstructor() {
+  return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+}
+
+function suggestedMealForNow() {
+  const hour = new Date().getHours();
+  if (hour < 10) return "petit déjeuner";
+  if (hour < 14) return "déjeuner";
+  if (hour < 18) return "collation";
+  return "dîner";
+}
+
+function openVoiceDictation(options = {}) {
+  closeVoiceDictation();
+  const supported = Boolean(voiceRecognitionConstructor());
+  const overlay = document.createElement("div");
+  overlay.id = "voiceDictationModal";
+  overlay.className = "voice-overlay";
+  overlay.innerHTML = `<div class="voice-modal" role="dialog" aria-modal="true" aria-labelledby="voiceTitle">
+    <div class="section-head">
+      <div><p class="eyebrow">Ajout express</p><h2 id="voiceTitle">Dicter mon repas</h2></div>
+      <button class="sheet-close" type="button" aria-label="Fermer" data-close-voice>×</button>
+    </div>
+    <p class="voice-privacy">Mass+ ne conserve pas ta dictée. La transcription dépend du service vocal de ton navigateur et n’est partagée qu’à ton initiative.</p>
+    <label class="voice-meal-label">Repas
+      <select id="voiceMeal">${MEALS.map((meal) => `<option ${meal === suggestedMealForNow() ? "selected" : ""}>${esc(meal)}</option>`).join("")}</select>
+    </label>
+    ${supported ? `<div class="voice-listener" id="voiceListener">
+      <button class="voice-mic-button" id="voiceMicButton" type="button" aria-pressed="false" aria-describedby="voiceStatus">
+        <span class="voice-mic-ripple" aria-hidden="true"></span>
+        <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M9 21h6"/></svg>
+        <strong id="voiceMicLabel">Démarrer la dictée</strong>
+      </button>
+    </div>` : ""}
+    <p class="voice-status ${supported ? "" : "voice-unavailable"}" id="voiceStatus" role="status" aria-live="polite">${supported ? "Appuie sur le micro puis décris ton repas." : "La dictée vocale n’est pas disponible ici. Décris simplement ton repas ci-dessous."}</p>
+    <label for="voiceTranscript">${supported ? "Transcription" : "Décris ton repas"}</label>
+    <textarea id="voiceTranscript" placeholder="Ex. : Ce midi, j’ai mangé deux tartines avec du beurre, un skyr et une banane…" autocomplete="off"></textarea>
+    <p class="voice-edit-hint">Tu peux corriger le texte avant de le partager.</p>
+    <div class="voice-actions">
+      <button class="primary-button wide" id="analyzeVoiceMeal" type="button" disabled>Analyser avec mon IA</button>
+      <button class="secondary-button wide" id="voiceImportButton" type="button" hidden>Coller la réponse IA</button>
+    </div>
+    <div id="voiceSharePanel"></div>
+    <div id="voiceAnalysisPanel"></div>
+  </div>`;
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add("visible"));
+
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay || event.target.closest("[data-close-voice]")) closeVoiceDictation();
+  });
+  overlay.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeVoiceDictation();
+  });
+  $("#voiceTranscript").addEventListener("input", handleVoiceTranscriptInput);
+  $("#voiceMicButton")?.addEventListener("click", toggleVoiceRecognition);
+  $("#analyzeVoiceMeal").addEventListener("click", shareVoiceWithAi);
+  $("#voiceImportButton").addEventListener("click", () => {
+    if (voiceAnalysisMeta) openAiImportModal(voiceAnalysisMeta);
+  });
+
+  if (supported && options.autoStart) startVoiceRecognition();
+  else setTimeout(() => $("#voiceTranscript")?.focus(), 80);
+}
+
+function closeVoiceDictation() {
+  if (voiceRecognition) {
+    voiceRecognition.onend = null;
+    try { voiceRecognition.stop(); } catch { /* Recognition may already be stopped. */ }
+  }
+  voiceRecognition = null;
+  voiceListening = false;
+  voiceSessionPrefix = "";
+  voiceRecognitionHadError = false;
+  voiceAnalysisMeta = null;
+  const modal = $("#voiceDictationModal");
+  if (!modal) return;
+  modal.classList.remove("visible");
+  setTimeout(() => modal.remove(), 160);
+}
+
+function toggleVoiceRecognition() {
+  if (voiceListening) stopVoiceRecognition();
+  else startVoiceRecognition();
+}
+
+function startVoiceRecognition() {
+  const Recognition = voiceRecognitionConstructor();
+  if (!Recognition) {
+    setVoiceStatus("La dictée vocale n’est pas disponible ici. Décris ton repas dans le champ.", true);
+    $("#voiceTranscript")?.focus();
+    return;
+  }
+  if (voiceListening) return;
+
+  const transcript = $("#voiceTranscript");
+  voiceSessionPrefix = transcript?.value.trim() || "";
+  voiceRecognitionHadError = false;
+  voiceRecognition = new Recognition();
+  voiceRecognition.lang = "fr-FR";
+  voiceRecognition.interimResults = true;
+  voiceRecognition.continuous = true;
+  voiceRecognition.maxAlternatives = 1;
+  voiceRecognition.onstart = () => setVoiceListeningState(true);
+  voiceRecognition.onresult = updateVoiceTranscriptFromRecognition;
+  voiceRecognition.onerror = handleVoiceRecognitionError;
+  voiceRecognition.onend = () => {
+    voiceRecognition = null;
+    setVoiceListeningState(false);
+    if (!voiceRecognitionHadError && !$("#voiceTranscript")?.value.trim()) setVoiceStatus("Aucune parole reconnue. Réessaie ou écris ton repas.");
+  };
+
+  try {
+    voiceRecognition.start();
+    setVoiceStatus("Autorise le microphone si ton navigateur le demande…");
+  } catch (error) {
+    console.info("Speech recognition start unavailable", error?.name || "recognition_error");
+    voiceRecognition = null;
+    setVoiceListeningState(false);
+    setVoiceStatus("Impossible de démarrer la dictée. Décris ton repas dans le champ.", true);
+    transcript?.focus();
+  }
+}
+
+function stopVoiceRecognition() {
+  if (!voiceRecognition) {
+    setVoiceListeningState(false);
+    return;
+  }
+  setVoiceStatus("Finalisation de la transcription…");
+  try { voiceRecognition.stop(); } catch { setVoiceListeningState(false); }
+}
+
+function updateVoiceTranscriptFromRecognition(event) {
+  let finalText = "";
+  let interimText = "";
+  for (let index = 0; index < event.results.length; index += 1) {
+    const text = String(event.results[index][0]?.transcript || "").trim();
+    if (!text) continue;
+    if (event.results[index].isFinal) finalText += `${finalText ? " " : ""}${text}`;
+    else interimText += `${interimText ? " " : ""}${text}`;
+  }
+  const parts = [voiceSessionPrefix, finalText, interimText].filter(Boolean);
+  const transcript = $("#voiceTranscript");
+  if (transcript) transcript.value = parts.join(" ");
+  setVoiceStatus(interimText ? `Écoute en cours… ${interimText}` : "Écoute en cours… continue ou appuie pour arrêter.");
+  updateVoiceAnalyzeState();
+}
+
+function handleVoiceRecognitionError(event) {
+  voiceRecognitionHadError = true;
+  const messages = {
+    "not-allowed": "Accès au microphone refusé. Tu peux décrire ton repas dans le champ ci-dessous.",
+    "service-not-allowed": "La dictée est bloquée par le navigateur. Tu peux écrire ton repas ci-dessous.",
+    "audio-capture": "Aucun microphone disponible. Tu peux écrire ton repas ci-dessous.",
+    "no-speech": "Aucune parole détectée. Réessaie ou écris ton repas.",
+    "language-not-supported": "Le français n’est pas pris en charge ici. Tu peux écrire ton repas ci-dessous.",
+    network: "Le service vocal du navigateur est indisponible. Tu peux écrire ton repas ci-dessous."
+  };
+  setVoiceStatus(messages[event.error] || "La dictée s’est interrompue. Tu peux réessayer ou écrire ton repas.", true);
+  setVoiceListeningState(false);
+}
+
+function setVoiceListeningState(listening) {
+  voiceListening = listening;
+  const listener = $("#voiceListener");
+  const button = $("#voiceMicButton");
+  const label = $("#voiceMicLabel");
+  const transcript = $("#voiceTranscript");
+  listener?.classList.toggle("is-listening", listening);
+  if (button) button.setAttribute("aria-pressed", String(listening));
+  if (label) label.textContent = listening ? "Arrêter la dictée" : "Démarrer la dictée";
+  if (transcript) transcript.readOnly = listening;
+  if (listening) setVoiceStatus("Écoute en cours… parle naturellement.");
+}
+
+function setVoiceStatus(message, isError = false) {
+  const status = $("#voiceStatus");
+  if (!status) return;
+  status.textContent = message;
+  status.classList.toggle("voice-error", isError);
+}
+
+function updateVoiceAnalyzeState() {
+  const button = $("#analyzeVoiceMeal");
+  if (button) button.disabled = !$("#voiceTranscript")?.value.trim();
+}
+
+function handleVoiceTranscriptInput() {
+  if (voiceAnalysisMeta) {
+    voiceAnalysisMeta = null;
+    $("#voiceImportButton").hidden = true;
+    const sharePanel = $("#voiceSharePanel");
+    if (sharePanel) sharePanel.innerHTML = "";
+  }
+  updateVoiceAnalyzeState();
+}
+
+async function shareVoiceWithAi() {
+  if (voiceListening) stopVoiceRecognition();
+  const transcript = $("#voiceTranscript")?.value.trim() || "";
+  if (!transcript) {
+    setVoiceStatus("Décris d’abord ton repas.", true);
+    $("#voiceTranscript")?.focus();
+    return;
+  }
+  const prompt = buildVoiceAiPrompt(transcript);
+  voiceAnalysisMeta = {
+    id: `voice-${id()}`,
+    sourceType: "voice",
+    transcript,
+    meal: $("#voiceMeal")?.value || suggestedMealForNow(),
+    date: today()
+  };
+  $("#voiceImportButton").hidden = false;
+
+  if (!navigator.share) {
+    renderVoiceShareFallback(prompt);
+    return;
+  }
+  try {
+    await navigator.share({ title: "Analyse alimentaire Mass+", text: prompt });
+    setVoiceStatus("Prompt partagé. Reviens ensuite coller la réponse JSON de ton IA.");
+    renderVoiceShareReturn();
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      setVoiceStatus("Partage annulé. Ton texte est toujours ici.");
+      return;
+    }
+    console.info("Native voice share unavailable", { name: error?.name, message: error?.message });
+    renderVoiceShareFallback(prompt);
+  }
+}
+
+function renderVoiceShareReturn() {
+  const panel = $("#voiceSharePanel");
+  if (!panel) return;
+  panel.innerHTML = `<div class="voice-share-note">
+    <strong>Étape suivante</strong>
+    <p>Envoie le message dans l’IA choisie, puis reviens dans Mass+ pour coller sa réponse JSON.</p>
+    <button class="secondary-button wide" id="voiceReturnImport" type="button">Coller la réponse IA</button>
+  </div>`;
+  $("#voiceReturnImport").addEventListener("click", () => openAiImportModal(voiceAnalysisMeta));
+}
+
+function renderVoiceShareFallback(prompt) {
+  setVoiceStatus("Le partage n’est pas disponible. Copie le prompt et colle-le dans ton IA.", true);
+  const panel = $("#voiceSharePanel");
+  if (!panel) return;
+  panel.innerHTML = `<div class="voice-share-note voice-share-fallback">
+    <strong>Partage indisponible</strong>
+    <p>Copie ce prompt, ouvre ChatGPT ou Gemini, colle-le et envoie-le.</p>
+    <label for="voicePromptFallback">Prompt prêt à copier</label>
+    <textarea id="voicePromptFallback" readonly></textarea>
+    <div class="inline-actions">
+      <button class="primary-button" id="copyVoicePrompt" type="button">Copier le prompt</button>
+      <button class="secondary-button" id="voiceFallbackImport" type="button">Coller la réponse IA</button>
+    </div>
+    <p class="small" id="voiceCopyStatus" role="status"></p>
+  </div>`;
+  $("#voicePromptFallback").value = prompt;
+  $("#copyVoicePrompt").addEventListener("click", async () => {
+    const success = await copyTextToClipboard(prompt);
+    $("#voiceCopyStatus").textContent = success ? "Prompt copié." : "Copie refusée. Sélectionne le texte et copie-le manuellement.";
+    if (!success) $("#voicePromptFallback").select();
+  });
+  $("#voiceFallbackImport").addEventListener("click", () => openAiImportModal(voiceAnalysisMeta));
+  panel.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+
+async function copyTextToClipboard(text) {
+  if (!navigator.clipboard?.writeText) return false;
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (error) {
+    console.info("Clipboard copy unavailable", error?.name || "clipboard_error");
+    return false;
+  }
+}
 
 let scannerStream = null;
 let scannerTimer = null;
@@ -3020,14 +3368,7 @@ async function renderPhotoList() {
 }
 
 async function copyAiPrompt() {
-  if (!navigator.clipboard?.writeText) return false;
-  try {
-    await navigator.clipboard.writeText(MASS_PLUS_AI_PROMPT);
-    return true;
-  } catch (error) {
-    console.info("Prompt clipboard copy unavailable", error?.name || "clipboard_error");
-    return false;
-  }
+  return copyTextToClipboard(MASS_PLUS_AI_PROMPT);
 }
 
 async function sharePhotoWithAi(photoId) {
@@ -3171,9 +3512,11 @@ function renderShareFallback(meta, copied) {
   panel.scrollIntoView({ block: "start", behavior: "smooth" });
 }
 
-function openAiImportModal(photoId) {
+function openAiImportModal(photoIdOrMeta) {
   closeAiImportModal();
-  const meta = state.photos.find((photo) => photo.id === photoId);
+  const meta = typeof photoIdOrMeta === "object" && photoIdOrMeta
+    ? photoIdOrMeta
+    : state.photos.find((photo) => photo.id === photoIdOrMeta);
   if (!meta) return;
   const overlay = document.createElement("div");
   overlay.id = "aiImportModal";
@@ -3206,7 +3549,7 @@ function openAiImportModal(photoId) {
   $("#importAiText").addEventListener("click", () => importAiResponseAsText(meta));
   $("#manualAiCorrection").addEventListener("click", () => {
     closeAiImportModal();
-    startManualPhotoEntry(meta.id);
+    startManualImportedEntry(meta);
   });
   setTimeout(() => $("#aiResponseText")?.focus(), 80);
 }
@@ -3458,9 +3801,12 @@ function quantityToGrams(quantity, foodName = "") {
 
 function buildImportedMealDraft(meta, payload) {
   const quantityWarnings = payload.foods.filter((food) => !food.grams).map((food) => `Quantité en grammes à confirmer pour ${food.name}.`);
+  const isVoice = meta.sourceType === "voice";
   return {
     id: id(),
-    photoId: meta.id,
+    photoId: isVoice ? "" : meta.id,
+    transcript: isVoice ? meta.transcript : "",
+    sourceType: isVoice ? "voice" : "photo",
     meal: meta.meal,
     date: meta.date || today(),
     mealTitle: payload.mealName,
@@ -3476,6 +3822,26 @@ function buildImportedMealDraft(meta, payload) {
 
 function emptyMealItem() {
   return { id: id(), name: "", quantityLabel: "100 g", grams: 100, kcal: 0, protein: 0, carbs: 0, fat: 0, source: "Saisie manuelle" };
+}
+
+function startManualImportedEntry(meta) {
+  if (meta.sourceType !== "voice") {
+    startManualPhotoEntry(meta.id);
+    return;
+  }
+  photoAnalysisDraft = {
+    id: id(),
+    photoId: "",
+    transcript: meta.transcript,
+    sourceType: "voice",
+    meal: meta.meal,
+    date: meta.date || today(),
+    mealTitle: "Repas saisi manuellement",
+    analysisWarnings: [],
+    source: "Saisie manuelle",
+    items: [emptyMealItem()]
+  };
+  renderPhotoAnalysisDraft();
 }
 
 function startManualPhotoEntry(photoId) {
@@ -3502,17 +3868,20 @@ function bestFoodMatch(name) {
 }
 
 function cancelPhotoAnalysisPanel() {
-  const panel = $("#photoAnalysisPanel");
+  const panel = $("#voiceAnalysisPanel") || $("#photoAnalysisPanel");
   if (panel) panel.innerHTML = "";
   photoAnalysisDraft = null;
 }
 
 function renderPhotoAnalysisDraft() {
-  const panel = $("#photoAnalysisPanel");
+  const panel = photoAnalysisDraft?.sourceType === "voice" ? $("#voiceAnalysisPanel") : $("#photoAnalysisPanel");
   if (!panel || !photoAnalysisDraft) return;
+  const sourcePreview = photoAnalysisDraft.sourceType === "voice"
+    ? `<div class="analysis-voice-preview"><span>Repas dicté</span><p>${esc(photoAnalysisDraft.transcript)}</p></div>`
+    : `<div id="analysisPhotoPreview" class="analysis-photo-preview"><span>Photo enregistrée</span></div>`;
   panel.innerHTML = `<article class="card analysis-card">
     <div class="section-head"><h2>Vérifier le repas</h2><button class="ghost-inline" id="closeAnalysis" type="button">Fermer</button></div>
-    <div id="analysisPhotoPreview" class="analysis-photo-preview"><span>Photo enregistrée</span></div>
+    ${sourcePreview}
     <p class="notice analysis-notice">${esc(PHOTO_ANALYSIS_DISCLAIMER)}</p>
     <p class="small"><strong>${esc(photoAnalysisDraft.mealTitle)}</strong> · ${esc(photoAnalysisDraft.source)}</p>
     <div class="stack analysis-list">${photoAnalysisDraft.items.map(analysisItemRow).join("") || `<p class="small">Aucun aliment. Ajoutez une ligne pour continuer.</p>`}</div>
@@ -3526,7 +3895,7 @@ function renderPhotoAnalysisDraft() {
     </div>
   </article>`;
   bindPhotoAnalysisDraft();
-  renderAnalysisPhotoPreview(photoAnalysisDraft.photoId);
+  if (photoAnalysisDraft.photoId) renderAnalysisPhotoPreview(photoAnalysisDraft.photoId);
   panel.scrollIntoView({ block: "start", behavior: "smooth" });
 }
 
@@ -3694,6 +4063,7 @@ function confirmPhotoAnalysis() {
     toast("Vérifiez les noms, quantités et valeurs nutritionnelles.");
     return false;
   }
+  const fromVoice = photoAnalysisDraft.sourceType === "voice";
   selectedDate = photoAnalysisDraft.date;
   selectedMeal = photoAnalysisDraft.meal;
   photoAnalysisDraft.items.forEach((item) => {
@@ -3719,6 +4089,7 @@ function confirmPhotoAnalysis() {
   saveState();
   toast("Repas ajouté au journal après confirmation.");
   photoAnalysisDraft = null;
+  if (fromVoice) closeVoiceDictation();
   go("home");
   return true;
 }
