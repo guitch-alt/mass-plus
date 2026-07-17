@@ -1,6 +1,7 @@
 "use strict";
 
-const APP_VERSION = "1.2.1";
+const Core = window.MassPlusCore;
+const APP_VERSION = "1.3.0";
 const STORAGE_KEY = "mass-plus-state-v2";
 const LEGACY_KEYS = ["mass-plus-mvp-v1", "mass-plus-state"];
 const DB_NAME = "mass-plus-local";
@@ -32,6 +33,46 @@ const EXCLUSION_OPTIONS = ["lactose", "gluten", "œufs", "arachides", "fruits à
 const QUICK_SNACK_IDS = ["skyr", "banane", "amandes", "lait-entier", "pain", "beurre-cacahuete", "fromage", "compote", "oeufs", "avocat"];
 const OFF_FIELDS = "code,product_name,product_name_fr,generic_name,brands,quantity,serving_size,nutriments,image_front_small_url,countries_tags";
 const PHOTO_ANALYSIS_DISCLAIMER = "Vérifiez toujours les aliments, quantités et valeurs nutritionnelles avant l’ajout au journal.";
+const AI_JSON_FORMAT_INSTRUCTIONS = `Réponds uniquement avec un unique objet JSON valide, sans aucun texte explicatif.
+
+IMPORTANT POUR LA COPIE :
+- place l’intégralité du JSON dans un unique bloc de code commençant exactement par \`\`\`json et se terminant par \`\`\` ;
+- n’écris aucun texte avant le bloc de code ;
+- n’écris aucun texte après le bloc de code ;
+- n’utilise qu’un seul bloc de code ;
+- n’ajoute aucun commentaire dans le JSON ;
+- n’utilise pas de virgule après le dernier champ ;
+- utilise uniquement des guillemets droits ;
+- utilise uniquement des nombres pour les valeurs nutritionnelles ;
+- utilise un point comme séparateur décimal ;
+- respecte exactement la structure JSON demandée ;
+- le bouton de copie du bloc doit permettre de copier toute la réponse en un seul appui.
+
+Le résultat attendu doit respecter exactement cette structure :
+
+\`\`\`json
+{
+  "mealName": "Nom du repas",
+  "foods": [
+    {
+      "name": "Nom de l’aliment",
+      "quantity": "Quantité estimée",
+      "calories": 0,
+      "protein": 0,
+      "carbohydrates": 0,
+      "fat": 0
+    }
+  ],
+  "totals": {
+    "calories": 0,
+    "protein": 0,
+    "carbohydrates": 0,
+    "fat": 0
+  },
+  "uncertainties": []
+}
+\`\`\``;
+
 const MASS_PLUS_AI_PROMPT = `Analyse cette photo alimentaire pour l’application Mass+.
 
 Identifie uniquement les aliments réellement visibles.
@@ -47,39 +88,7 @@ Pour chaque aliment, estime :
 
 Donne une ligne distincte pour chaque aliment visible.
 
-Réponds avec un seul objet JSON valide.
-
-IMPORTANT POUR LA COPIE :
-- place tout le JSON dans un unique bloc de code \`\`\`json ;
-- n’écris aucun commentaire dans le JSON ;
-- n’ajoute aucun texte à l’intérieur du bloc ;
-- n’utilise pas de virgule après le dernier champ ;
-- utilise uniquement des nombres pour les valeurs nutritionnelles ;
-- utilise un point comme séparateur décimal ;
-- le bouton de copie du bloc doit permettre de copier toute la réponse facilement.
-
-Format exact :
-
-{
-  "mealName": "Nom du repas",
-  "foods": [
-    {
-      "name": "Nom de l'aliment",
-      "quantity": "Quantité estimée",
-      "calories": 0,
-      "protein": 0,
-      "carbohydrates": 0,
-      "fat": 0
-    }
-  ],
-  "totals": {
-    "calories": 0,
-    "protein": 0,
-    "carbohydrates": 0,
-    "fat": 0
-  },
-  "uncertainties": "Éléments éventuels à confirmer"
-}
+${AI_JSON_FORMAT_INSTRUCTIONS}
 
 Si la photo est ambiguë, indique-le uniquement dans « uncertainties ».
 
@@ -106,28 +115,7 @@ Pour chaque aliment ou boisson, estime :
 Si une quantité est imprécise, fais une estimation raisonnable et prudente, puis signale-la dans "uncertainties".
 Donne également le total du repas.
 
-Réponds uniquement avec un unique objet JSON valide, sans Markdown et sans texte avant ou après, en respectant exactement ce format :
-
-{
-  "mealName": "Nom du repas",
-  "foods": [
-    {
-      "name": "Nom de l'aliment",
-      "quantity": "Quantité estimée",
-      "calories": 0,
-      "protein": 0,
-      "carbohydrates": 0,
-      "fat": 0
-    }
-  ],
-  "totals": {
-    "calories": 0,
-    "protein": 0,
-    "carbohydrates": 0,
-    "fat": 0
-  },
-  "uncertainties": "Éléments éventuels à confirmer"
-}
+${AI_JSON_FORMAT_INSTRUCTIONS}
 
 Toutes les valeurs nutritionnelles doivent être numériques. Crée une ligne par aliment ou boisson mentionné. N'ajoute aucune information absente de la description.`;
 }
@@ -191,6 +179,7 @@ let voiceAnalysisMeta = null;
 let savedMealEditDraft = null;
 let pendingBackupRestore = null;
 let recipeFilter = "all";
+let weightRange = "30";
 let state = emptyState();
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -295,6 +284,9 @@ function emptyState() {
       goalMode: "auto",
       manualCalories: "",
       manualProtein: "",
+      desiredPace: "progressif",
+      weighingFrequency: "three",
+      weighingDays: [1, 3, 6],
       exclusions: [],
       exclusionOther: ""
     },
@@ -312,6 +304,13 @@ function emptyState() {
     photos: [],
     pendingPhotoMeal: "déjeuner",
     untrackedDays: [],
+    engagement: {
+      completedMissions: [],
+      eveningReviews: [],
+      viewedStories: {},
+      celebratedCheckIns: {},
+      weeklyCardsSeen: {}
+    },
     migrations: {}
   };
 }
@@ -418,6 +417,7 @@ async function persistStateSnapshot(source) {
       hiddenTips: snapshot.hiddenTips || {},
       pendingPhotoMeal: snapshot.pendingPhotoMeal || "déjeuner",
       untrackedDays: snapshot.untrackedDays || [],
+      engagement: snapshot.engagement || emptyState().engagement,
       migrations: snapshot.migrations || {},
       updatedAt: new Date().toISOString()
     });
@@ -442,7 +442,8 @@ function enqueueStatePersistence(source = state) {
 }
 
 function weightRecord(item) {
-  return { id: item.id || item.date || id(), date: item.date || today(), weight: Number(item.weight || 0) };
+  const normalized = Core.normalizeWeightEntry(item);
+  return { ...normalized, id: item.id || normalized.id || id() };
 }
 
 function normalizeEntry(entry) {
@@ -536,6 +537,7 @@ async function loadPersistentState() {
   next.photos = photos;
   next.pendingPhotoMeal = settingsRecord?.pendingPhotoMeal || "déjeuner";
   next.untrackedDays = Array.isArray(settingsRecord?.untrackedDays) ? [...new Set(settingsRecord.untrackedDays.filter(isDateKey))] : [];
+  next.engagement = { ...next.engagement, ...(settingsRecord?.engagement || {}) };
   next.migrations = settingsRecord?.migrations || {};
   next.savedAt = settingsRecord?.savedAt || "";
   next.saveRevision = Number(settingsRecord?.saveRevision || 0);
@@ -582,6 +584,9 @@ function migrateState(saved, options = {}) {
     goalMode: profile.goalMode || "auto",
     manualCalories: profile.manualCalories || profile.calorieGoal || "",
     manualProtein: profile.manualProtein || profile.proteinGoal || "",
+    desiredPace: profile.desiredPace || "progressif",
+    weighingFrequency: ["daily", "three", "weekly"].includes(profile.weighingFrequency) ? profile.weighingFrequency : "three",
+    weighingDays: Array.isArray(profile.weighingDays) && profile.weighingDays.length ? profile.weighingDays : [1, 3, 6],
     exclusions: Array.isArray(profile.exclusions) ? profile.exclusions : [],
     exclusionOther: profile.exclusionOther || ""
   };
@@ -599,8 +604,13 @@ function migrateState(saved, options = {}) {
   next.photos = Array.isArray(saved.photos) ? saved.photos : [];
   next.pendingPhotoMeal = saved.pendingPhotoMeal || "déjeuner";
   next.untrackedDays = Array.isArray(saved.untrackedDays) ? [...new Set(saved.untrackedDays.filter(isDateKey))] : [];
+  next.engagement = {
+    ...next.engagement,
+    ...(saved.engagement && typeof saved.engagement === "object" ? saved.engagement : {})
+  };
   next.migrations = saved.migrations && typeof saved.migrations === "object" ? saved.migrations : {};
   if (!next.migrations.savedMealsV1) next.migrations.savedMealsV1 = APP_VERSION;
+  if (!next.migrations.dailyEngagementV1) next.migrations.dailyEngagementV1 = APP_VERSION;
   migrateSavedMealsToRecipeFavorites(next);
   next.version = APP_VERSION;
   const latest = latestWeightFrom(next);
@@ -751,6 +761,218 @@ function totals(entries = dayEntries()) {
 
 function dayEntries(date = selectedDate || today()) {
   return state.entries.filter((entry) => entry.date === date);
+}
+
+function checkInFor(dateKey = today()) {
+  return Core.checkInState(state.entries, state.weights, state.profile, dateKey);
+}
+
+function weightSummary(dateKey = today()) {
+  return Core.weightSummary(state.weights, profileNumber("targetWeight"), dateKey);
+}
+
+function activityOverview(dateKey = today()) {
+  return Core.activityStats(state.entries, state.weights, state.engagement, state.profile, dateKey);
+}
+
+function weeklyOverview(dateKey = today()) {
+  return Core.weeklySummary(state.entries, state.weights, state.engagement, state.profile, dateKey);
+}
+
+function formatSigned(value, digits = 1) {
+  const number = Number(value || 0);
+  return `${number > 0 ? "+" : ""}${fmt(number, digits)}`;
+}
+
+function trendMessage(summary = weightSummary()) {
+  if (!summary.previous) return "La tendance sur plusieurs jours sera visible après quelques mesures.";
+  if (!summary.previousAverage7) return "Une variation quotidienne est normale. Continue simplement ton suivi.";
+  const direction = summary.targetWeight && summary.startWeight ? Math.sign(summary.targetWeight - summary.startWeight) : 0;
+  const movingTowardTarget = direction && Math.sign(summary.trend7) === direction;
+  if (Math.abs(summary.trend7) < 0.05) return "Ta moyenne sur 7 jours reste stable. Une mesure isolée compte peu.";
+  if (movingTowardTarget) return "Ta moyenne évolue progressivement dans la direction de ton objectif.";
+  return "La tendance sur plusieurs jours est plus importante qu’une mesure isolée.";
+}
+
+function checkInReward(action, detail = "") {
+  const checkin = checkInFor();
+  const prefix = detail || (action === "weight" ? "Poids enregistré ✓" : "Repas ajouté ✓");
+  if (checkin.complete) {
+    const activeDays = activityOverview().currentRun || 1;
+    return `${prefix} · Check-in terminé, ${activeDays} jour${activeDays > 1 ? "s" : ""} actif${activeDays > 1 ? "s" : ""}.`;
+  }
+  return `${prefix} · Encore une petite action pour terminer ton check-in.`;
+}
+
+function mealKey(entry) {
+  return `${entry.date}|${entry.meal || mealFromType(entry.mealType) || "autre"}`;
+}
+
+function recentMealGroups(limit = 8, includeToday = false) {
+  const groups = new Map();
+  [...state.entries]
+    .filter((entry) => includeToday || entry.date !== today())
+    .sort((a, b) => String(b.createdAt || b.date).localeCompare(String(a.createdAt || a.date)))
+    .forEach((entry) => {
+      const key = mealKey(entry);
+      if (!groups.has(key)) groups.set(key, { key, date: entry.date, meal: entry.meal, entries: [] });
+      groups.get(key).entries.push(entry);
+    });
+  return [...groups.values()].sort((a, b) => b.date.localeCompare(a.date)).slice(0, limit);
+}
+
+function recentMealLabel(group) {
+  const sum = totals(group.entries);
+  const names = [...new Set(group.entries.map((entry) => entry.name))].slice(0, 2).join(", ");
+  return `${group.meal} · ${names}${group.entries.length > 2 ? "…" : ""} · ${fmt(sum.kcal)} kcal`;
+}
+
+function repeatRecentMeal(key) {
+  const group = recentMealGroups(30, true).find((item) => item.key === key);
+  if (!group?.entries.length) {
+    toast("Ce repas récent n’est plus disponible.");
+    return;
+  }
+  selectedDate = today();
+  const targetMeal = group.meal || suggestedMealForNow();
+  let addedCalories = 0;
+  group.entries.forEach((entry) => {
+    let food = findFood(entry.foodId);
+    if (!food) {
+      const factor = 100 / Math.max(1, Number(entry.grams || 100));
+      food = {
+        id: `repeat-${entry.id}`,
+        name: entry.name,
+        source: entry.source || "Repas récent",
+        kcalPer100g: Number(entry.kcal || 0) * factor,
+        proteinPer100g: Number(entry.protein || 0) * factor,
+        carbsPer100g: Number(entry.carbs || 0) * factor,
+        fatPer100g: Number(entry.fat || 0) * factor,
+        unit: entry.unit || "g"
+      };
+    }
+    addEntry(food, Number(entry.grams || 0), targetMeal, false);
+    addedCalories += Number(entry.kcal || 0);
+  });
+  saveState();
+  closeAddSheet({ keepHistory: true });
+  toast(checkInReward("meal", `Repas repris : ${fmt(addedCalories)} kcal`));
+  go("home");
+}
+
+function frequentMealSuggestions(limit = 3) {
+  const targetMeal = suggestedMealForNow();
+  const groups = recentMealGroups(40).filter((group) => group.meal === targetMeal);
+  const signatures = new Map();
+  groups.forEach((group) => {
+    const signature = group.entries.map((entry) => entry.foodId || entry.name).sort().join("|");
+    const existing = signatures.get(signature);
+    if (!existing) signatures.set(signature, { ...group, count: 1 });
+    else existing.count += 1;
+  });
+  const repeated = [...signatures.values()].sort((a, b) => b.count - a.count || b.date.localeCompare(a.date));
+  const favorites = state.favorites
+    .filter((favorite) => favorite.meal === targetMeal && favorite.items?.length)
+    .map((favorite) => ({ type: "favorite", id: favorite.id, label: favorite.name, count: 1 }));
+  return [
+    ...repeated.map((group) => ({ type: "recent", id: group.key, label: recentMealLabel(group), count: group.count })),
+    ...favorites
+  ].slice(0, limit);
+}
+
+function mealSuggestionsMarkup() {
+  const suggestions = frequentMealSuggestions();
+  if (!suggestions.length) return `<p class="small">Tes repas habituels apparaîtront ici, uniquement à partir de ton journal local.</p>`;
+  return suggestions.map((item) => `
+    <button class="habit-choice" type="button" ${item.type === "recent" ? `data-repeat-meal="${esc(item.id)}"` : `data-sheet-favorite="${esc(item.id)}"`}>
+      <span><strong>${esc(item.label)}</strong><small>${item.count > 1 ? `Enregistré ${item.count} fois à ce moment de la journée` : "Suggestion locale"}</small></span>
+      <b>Ajouter</b>
+    </button>`).join("");
+}
+
+function missionForDate(dateKey = today()) {
+  const missions = [
+    { title: "Ajouter un repas sans attendre la fin de journée", hint: "Un suivi proche du moment du repas est souvent plus précis." },
+    { title: "Ajouter une source de protéines", hint: "Choisis simplement un aliment que tu apprécies déjà." },
+    { title: "Consulter ton bilan du jour", hint: "Quelques secondes suffisent pour ajuster tranquillement la suite." },
+    { title: "Préparer un repas favori", hint: "Enregistre-le pour le reprendre ensuite en deux appuis." }
+  ];
+  return missions[Number(dateKey.replaceAll("-", "")) % missions.length];
+}
+
+function missionCompleted(dateKey = today()) {
+  return (state.engagement.completedMissions || []).some((item) => (item.date || item) === dateKey);
+}
+
+function completeMission(dateKey = today()) {
+  if (missionCompleted(dateKey)) return;
+  const mission = missionForDate(dateKey);
+  state.engagement.completedMissions.push({ date: dateKey, title: mission.title, completedAt: new Date().toISOString() });
+  saveState();
+  toast("Mission validée ✓ · Cette action compte comme un jour actif.");
+  closeStory();
+  renderHome();
+}
+
+function quickEveningSuggestions() {
+  const items = [];
+  state.favorites.slice(0, 2).forEach((favorite) => items.push({
+    label: favorite.name,
+    action: "favorite",
+    id: favorite.id,
+    calories: favoriteTotals(favorite).kcal
+  }));
+  const recent = recentMealGroups(4).find((group) => !items.some((item) => item.label === recentMealLabel(group)));
+  if (recent) items.push({ label: recentMealLabel(recent), action: "recent", id: recent.key, calories: totals(recent.entries).kcal });
+  QUICK_SNACK_IDS.map(findFood).filter(Boolean).slice(0, 3).forEach((food) => {
+    if (items.length < 3) items.push({ label: food.name, action: "food", id: food.id, calories: calc(food, defaultPortion(food)).kcal });
+  });
+  return items.slice(0, 3);
+}
+
+function eveningReviewMarkup() {
+  if (new Date().getHours() < 17) return "";
+  const sum = totals(dayEntries(today()));
+  const goals = activeGoals();
+  const checkin = checkInFor();
+  const remaining = Math.round(Number(goals.calories || 0) - sum.kcal);
+  const reviewed = (state.engagement.eveningReviews || []).some((item) => (item.date || item) === today());
+  const message = remaining > 0
+    ? `Il reste environ ${fmt(remaining)} kcal. Voici trois options rapides tirées de tes habitudes.`
+    : "Journée enregistrée. Une journée isolée ne définit pas ta progression.";
+  return `<article class="card evening-card">
+    <div class="section-head"><div><p class="eyebrow">Fin de journée</p><h2>Ton bilan du jour</h2></div><span class="status-pill">${reviewed ? "Consulté ✓" : "À consulter"}</span></div>
+    <div class="grid two evening-metrics">
+      ${metric("Calories", `${fmt(sum.kcal)} / ${fmt(goals.calories)} kcal`)}
+      ${metric("Protéines", `${fmt(sum.protein, 1)} / ${fmt(goals.protein)} g`)}
+      ${metric("Repas", new Set(dayEntries(today()).map((entry) => entry.meal)).size)}
+      ${metric("Check-in", checkin.complete ? "Terminé ✓" : `${checkin.completedCount}/${checkin.requiredCount}`)}
+    </div>
+    <p>${esc(message)}</p>
+    <div class="evening-suggestions">${quickEveningSuggestions().map((item) => `<button type="button" data-evening-action="${item.action}" data-evening-id="${esc(item.id)}"><strong>${esc(item.label)}</strong><small>Environ ${fmt(item.calories)} kcal</small></button>`).join("")}</div>
+    <button class="secondary-button wide" id="completeEveningReview" type="button">${reviewed ? "Bilan consulté" : "Valider mon bilan"}</button>
+  </article>`;
+}
+
+function weeklyCardMarkup() {
+  if (![0, 1].includes(Core.dayOfWeek(today()))) return "";
+  const week = weeklyOverview();
+  const breakfasts = new Set(state.entries.filter((entry) => entry.date >= week.start && entry.date <= week.end && entry.meal === "petit déjeuner").map((entry) => entry.date)).size;
+  const recommendation = breakfasts < 4
+    ? "Enregistrer plus régulièrement le petit-déjeuner rendrait ton suivi plus précis."
+    : "Tes repas sont suivis régulièrement. Continue avec le rythme qui te convient.";
+  return `<article class="card weekly-card">
+    <p class="eyebrow">Bilan hebdomadaire</p>
+    <h2>Ta semaine Mass+</h2>
+    <div class="grid two">
+      ${metric("Jours actifs", week.activeDays)}
+      ${metric("Repas enregistrés", week.recordedMeals)}
+      ${metric("Moyenne", week.averageCalories ? `${fmt(week.averageCalories)} kcal` : "À compléter")}
+      ${metric("Évolution moyenne", week.weightEvolution ? `${formatSigned(week.weightEvolution)} kg` : "Tendance en cours")}
+    </div>
+    <p class="small">Mission la plus souvent réussie : ${esc(week.topMission)}.</p>
+    <p>${esc(recommendation)}</p>
+  </article>`;
 }
 
 function allFoods() {
@@ -957,6 +1179,7 @@ function render() {
 
 function openAddSheet() {
   closeAddSheet({ keepHistory: true });
+  const lastMeal = recentMealGroups(1)[0];
   const overlay = document.createElement("div");
   overlay.id = "addSheet";
   overlay.className = "sheet-overlay";
@@ -968,6 +1191,10 @@ function openAddSheet() {
         <button class="sheet-close" type="button" aria-label="Fermer" data-close-sheet>×</button>
       </div>
       <p class="sheet-intro">Comment veux-tu ajouter ton repas ?</p>
+      ${lastMeal ? `<button class="sheet-choice sheet-choice-recent" type="button" data-repeat-meal="${esc(lastMeal.key)}">
+        <span class="sheet-choice-icon" aria-hidden="true">↻</span>
+        <span class="sheet-choice-copy"><strong>Reprendre mon dernier repas</strong><small>${esc(recentMealLabel(lastMeal))}</small></span>
+      </button>` : ""}
       <button class="sheet-choice sheet-choice-primary" type="button" data-add-choice="voice">
         <span class="sheet-choice-icon" aria-hidden="true">🎙️</span>
         <span class="sheet-choice-copy"><strong>Dicter mon repas</strong><small>Le plus rapide · parle naturellement</small></span>
@@ -984,6 +1211,10 @@ function openAddSheet() {
         <button type="button" data-add-choice="saved">Repas enregistré</button>
         <button type="button" data-add-choice="scan">Scanner un code-barres</button>
       </div>
+      <div class="sheet-habits">
+        <p class="eyebrow">Tu manges souvent</p>
+        ${mealSuggestionsMarkup()}
+      </div>
       <p class="sheet-status" id="addSheetStatus" role="status"></p>
     </div>`;
   document.body.appendChild(overlay);
@@ -993,6 +1224,11 @@ function openAddSheet() {
     if (event.target === overlay || event.target.closest("[data-close-sheet]")) closeAddSheet();
   });
   $$("[data-add-choice]", overlay).forEach((button) => button.addEventListener("click", () => handleAddChoice(button.dataset.addChoice)));
+  $$("[data-repeat-meal]", overlay).forEach((button) => button.addEventListener("click", () => repeatRecentMeal(button.dataset.repeatMeal)));
+  $$("[data-sheet-favorite]", overlay).forEach((button) => button.addEventListener("click", () => {
+    closeAddSheet({ keepHistory: true });
+    addFavoriteToJournal(button.dataset.sheetFavorite, { destination: "home" });
+  }));
 }
 
 function closeAddSheet(options = {}) {
@@ -1031,7 +1267,7 @@ function handleAddChoice(choice) {
   if (choice === "photo") go("photo");
   if (choice === "share-ai" || choice === "paste-ai") {
     go("photo");
-    setTimeout(() => toast("Choisissez d’abord une photo enregistrée, puis utilisez Partager à mon IA ou Coller la réponse IA."), 240);
+    setTimeout(() => toast("Choisissez d’abord une photo enregistrée, puis utilisez Partager à mon IA ou Coller le résultat IA."), 240);
   }
   if (choice === "saved") {
     recipesTab = "favorites";
@@ -1081,7 +1317,7 @@ function openVoiceDictation(options = {}) {
     <p class="voice-edit-hint">Tu peux corriger le texte avant de le partager.</p>
     <div class="voice-actions">
       <button class="primary-button wide" id="analyzeVoiceMeal" type="button" disabled>Analyser mon repas avec l’IA</button>
-      <button class="secondary-button wide" id="voiceImportButton" type="button" hidden>Coller la réponse IA</button>
+      <button class="secondary-button wide" id="voiceImportButton" type="button" hidden>Coller le résultat IA</button>
     </div>
     <div id="voiceSharePanel"></div>
     <div id="voiceAnalysisPanel"></div>
@@ -1291,8 +1527,8 @@ function renderVoiceShareReturn() {
   if (!panel) return;
   panel.innerHTML = `<div class="voice-share-note">
     <strong>Étape suivante</strong>
-    <p>Envoie le message dans l’IA choisie, puis reviens dans Mass+ pour coller sa réponse JSON.</p>
-    <button class="secondary-button wide" id="voiceReturnImport" type="button">Coller la réponse IA</button>
+    <p>Dans ChatGPT, touche Copier sur le bloc JSON, puis reviens dans Mass+.</p>
+    <button class="secondary-button wide" id="voiceReturnImport" type="button">Coller le résultat IA</button>
   </div>`;
   $("#voiceReturnImport").addEventListener("click", () => openAiImportModal(voiceAnalysisMeta));
 }
@@ -1306,11 +1542,12 @@ function renderVoiceShareFallback(prompt, copied = false) {
   panel.innerHTML = `<div class="voice-share-note voice-share-fallback">
     <strong>Partage indisponible</strong>
     <p>Copie ce prompt, ouvre ChatGPT ou Gemini, colle-le et envoie-le.</p>
+    <p>Dans ChatGPT, touche Copier sur le bloc JSON, puis reviens dans Mass+.</p>
     <label for="voicePromptFallback">Prompt prêt à copier</label>
     <textarea id="voicePromptFallback" readonly></textarea>
     <div class="inline-actions">
       <button class="primary-button" id="copyVoicePrompt" type="button">Copier le prompt</button>
-      <button class="secondary-button" id="voiceFallbackImport" type="button">Coller la réponse IA</button>
+      <button class="secondary-button" id="voiceFallbackImport" type="button">Coller le résultat IA</button>
     </div>
     <p class="small" id="voiceCopyStatus" role="status">${copied ? "Prompt copié automatiquement dans le presse-papiers." : ""}</p>
   </div>`;
@@ -1615,10 +1852,122 @@ function bindDailyTip() {
   });
 }
 
+function storiesMarkup() {
+  const checkin = checkInFor();
+  const activity = activityOverview();
+  const tip = tipForDate(today());
+  return `<div class="stories" aria-label="Cartes du jour">
+    <button type="button" data-story="checkin"><span class="story-ring" style="--story-progress:${checkin.percent * 3.6}deg"><i>✓</i></span><strong>Check-in</strong></button>
+    <button type="button" data-story="mission"><span class="story-ring ${missionCompleted() ? "complete" : ""}"><i>◇</i></span><strong>Mission</strong></button>
+    <button type="button" data-story="progress"><span class="story-ring"><i>${activity.activeThisWeek}</i></span><strong>Progression</strong></button>
+    <button type="button" data-story="tip"><span class="story-ring"><i>i</i></span><strong>${tip ? "Astuce" : "Repère"}</strong></button>
+  </div>`;
+}
+
+function checkInCardMarkup() {
+  const checkin = checkInFor();
+  const activity = activityOverview();
+  const intro = checkin.complete
+    ? "Tu as pris soin de ton objectif aujourd’hui."
+    : checkin.weightRequired
+      ? "Deux petites actions pour suivre ta progression aujourd’hui."
+      : "Aujourd’hui : un repas à enregistrer. La pesée reste facultative.";
+  return `<article class="card checkin-card ${checkin.complete ? "is-complete" : ""}" id="dailyCheckIn">
+    <div class="checkin-layout">
+      <div class="checkin-ring" style="--checkin-angle:${checkin.percent * 3.6}deg" role="img" aria-label="${checkin.completedCount} étape sur ${checkin.requiredCount}"><span>${checkin.completedCount}/${checkin.requiredCount}</span></div>
+      <div><p class="eyebrow">Rituel quotidien</p><h2>${checkin.complete ? "Check-in terminé 🎉" : "Mon check-in du jour"}</h2><p>${esc(intro)}</p></div>
+    </div>
+    <div class="checkin-steps">
+      <button type="button" id="checkInWeight" class="${checkin.weightDone ? "done" : ""}"><span>${checkin.weightDone ? "✓" : "1"}</span><strong>${checkin.weightRequired ? "Poids enregistré" : "Poids facultatif"}</strong><small>${checkin.weightDone ? `${fmt(weightSummary().currentWeight, 1)} kg aujourd’hui` : checkin.weightRequired ? "Ajouter mon poids" : "Ajouter librement"}</small></button>
+      <button type="button" id="checkInMeal" class="${checkin.mealDone ? "done" : ""}"><span>${checkin.mealDone ? "✓" : checkin.weightRequired ? "2" : "1"}</span><strong>Repas enregistrés</strong><small>${checkin.mealDone ? `${dayEntries(today()).length} entrée(s) aujourd’hui` : "Ajouter un repas"}</small></button>
+    </div>
+    ${activity.resumeMessage ? `<p class="supportive-message">${esc(activity.resumeMessage)}</p>` : ""}
+  </article>`;
+}
+
+function firstWeightMarkup() {
+  if (state.weights.length || latestWeight()) return "";
+  return `<article class="card first-weight-card"><p class="eyebrow">Première étape</p><h2>Ajoute ton premier poids</h2><p>Pour suivre réellement ta progression, ajoute ton premier poids. Cela prend moins de 10 secondes.</p><button class="primary-button wide" id="firstWeight" type="button">Ajouter mon poids de départ</button></article>`;
+}
+
+function memoryMarkup() {
+  const summary = weightSummary();
+  const oldest = Core.sortedWeights(state.weights)[0];
+  if (!oldest || oldest.date > Core.addDays(today(), -28)) return "";
+  const previous = Core.averageWeight(state.weights, 7, Core.addDays(today(), -28));
+  if (!previous || !summary.average7) return "";
+  return `<div class="memory-note"><strong>Il y a quatre semaines…</strong><p>Moyenne : ${fmt(previous, 1)} kg · aujourd’hui : ${fmt(summary.average7, 1)} kg. La comparaison repose sur des moyennes, pas sur une mesure isolée.</p></div>`;
+}
+
+function openStory(type) {
+  if (type === "checkin") {
+    $("#dailyCheckIn")?.scrollIntoView({ block: "start", behavior: "smooth" });
+    return;
+  }
+  closeStory();
+  const activity = activityOverview();
+  const mission = missionForDate();
+  const tip = tipForDate(today());
+  const content = type === "mission"
+    ? `<p class="eyebrow">Mission du jour</p><h2>${esc(mission.title)}</h2><p>${esc(mission.hint)}</p><button class="primary-button wide" id="completeMission" type="button" ${missionCompleted() ? "disabled" : ""}>${missionCompleted() ? "Mission validée ✓" : "Valider cette mission"}</button>`
+    : type === "progress"
+      ? `<p class="eyebrow">Jours actifs</p><h2>Ta progression</h2><div class="grid two">${metric("Série actuelle", `${activity.currentRun} jour(s)`)}${metric("Meilleur enchaînement", `${activity.bestRun} jour(s)`)}${metric("Cette semaine", `${activity.activeThisWeek} jour(s)`)}${metric("Semaines suivies", activity.trackedWeeks)}</div>${memoryMarkup()}<p class="supportive-message">${esc(activity.resumeMessage || "Chaque action utile compte. Garde un rythme qui te convient.")}</p>`
+      : `<p class="eyebrow">Astuce du jour</p><h2>${esc(tip?.title || "Un pas après l’autre")}</h2><p>${esc(tip?.body || "Un suivi simple et régulier est plus utile qu’une journée parfaite.")}</p>`;
+  const overlay = document.createElement("div");
+  overlay.id = "storyModal";
+  overlay.className = "story-overlay";
+  overlay.innerHTML = `<article class="story-modal" role="dialog" aria-modal="true"><div class="story-progress"><i></i></div><button class="sheet-close story-close" type="button" aria-label="Fermer" data-close-story>×</button><div class="story-content">${content}</div></article>`;
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add("visible"));
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay || event.target.closest("[data-close-story]")) closeStory();
+  });
+  $("#completeMission")?.addEventListener("click", () => completeMission());
+}
+
+function closeStory() {
+  const overlay = $("#storyModal");
+  if (!overlay) return;
+  overlay.classList.remove("visible");
+  setTimeout(() => overlay.remove(), 160);
+}
+
+function bindHomeEngagement() {
+  $$("[data-story]").forEach((button) => button.addEventListener("click", () => openStory(button.dataset.story)));
+  $("#checkInWeight")?.addEventListener("click", () => openWeightModal());
+  $("#firstWeight")?.addEventListener("click", () => openWeightModal({ first: true }));
+  $("#checkInMeal")?.addEventListener("click", openAddSheet);
+  $("#completeEveningReview")?.addEventListener("click", () => {
+    if (!(state.engagement.eveningReviews || []).some((item) => (item.date || item) === today())) {
+      state.engagement.eveningReviews.push({ date: today(), completedAt: new Date().toISOString() });
+      saveState();
+    }
+    toast("Bilan consulté ✓ · Cette action compte comme un jour actif.");
+    renderHome();
+  });
+  $$("[data-evening-action]").forEach((button) => button.addEventListener("click", () => {
+    const action = button.dataset.eveningAction;
+    const itemId = button.dataset.eveningId;
+    if (action === "favorite") addFavoriteToJournal(itemId, { destination: "home" });
+    if (action === "recent") repeatRecentMeal(itemId);
+    if (action === "food") {
+      const food = findFood(itemId);
+      if (food) {
+        selectedDate = today();
+        addEntry(food, defaultPortion(food), suggestedMealForNow());
+      }
+    }
+  }));
+}
+
 function renderHome() {
+  selectedDate = today();
   const sum = totals(dayEntries(today()));
   const goals = activeGoals();
   $("#screen").innerHTML = `
+    ${storiesMarkup()}
+    ${checkInCardMarkup()}
+    ${firstWeightMarkup()}
     <article class="card hero">
       <div class="hero-top">
         <div>
@@ -1665,7 +2014,11 @@ function renderHome() {
     <article class="card">
       <h2>Repas du jour</h2>
       <div class="stack">${MEALS.map(mealBlock).join("")}</div>
-    </article>`;
+    </article>
+    ${eveningReviewMarkup()}
+    ${weeklyCardMarkup()}
+    <p class="privacy-reminder">Tes données restent sur cet appareil. Pense à utiliser la sauvegarde Mass+ pour éviter de les perdre.</p>`;
+  bindHomeEngagement();
   bindDailyTip();
   $("#goAdd").addEventListener("click", () => { selectedDate = today(); selectedMeal = "petit déjeuner"; go("journal"); });
   $("#quickSnack").addEventListener("click", () => { selectedDate = today(); selectedMeal = "collation"; go("journal"); });
@@ -1695,8 +2048,9 @@ function addQuickDrink(foodId) {
   }
   selectedDate = today();
   selectedMeal = "collation";
-  addEntry(food, defaultPortion(food), selectedMeal, false);
-  toast(`${food.name} ajouté.`);
+  const portion = defaultPortion(food);
+  addEntry(food, portion, selectedMeal, false);
+  toast(checkInReward("meal", `${food.name} ajouté : ${fmt(calc(food, portion).kcal)} kcal`));
   renderHome();
 }
 
@@ -2170,7 +2524,8 @@ function addEntry(food, grams, meal, rerender = true, extras = {}) {
   });
   saveState();
   if (rerender) {
-    toast("Aliment ajouté.");
+    const remaining = Math.max(0, Math.round(Number(activeGoals().calories || 0) - totals(dayEntries(today())).kcal));
+    toast(checkInReward("meal", `${food.name} ajouté · ${fmt(macros.kcal)} kcal${remaining ? ` · environ ${fmt(remaining)} kcal restantes` : ""}`));
     render();
   }
 }
@@ -2330,21 +2685,25 @@ function removeFavoriteItem(favoriteId, index) {
   renderAfterSavedMealChange();
 }
 
-function addFavoriteToJournal(favoriteId) {
+function addFavoriteToJournal(favoriteId, options = {}) {
   const favorite = state.favorites.find((item) => item.id === favoriteId);
   if (!favorite) return;
   if (!favorite.items.length) {
     toast("Ce repas enregistré est vide.");
     return;
   }
+  let addedCalories = 0;
   favorite.items.forEach((item) => {
     const food = findFood(item.food);
-    if (food) addEntry(food, item.grams, favorite.meal, false);
+    if (food) {
+      addEntry(food, item.grams, favorite.meal, false);
+      addedCalories += calc(food, item.grams).kcal;
+    }
   });
   saveState();
-  toast("Repas enregistré ajouté au journal.");
+  toast(checkInReward("meal", `Repas ajouté : ${fmt(addedCalories)} kcal`));
   selectedMeal = favorite.meal;
-  go("journal");
+  go(options.destination || "journal");
 }
 
 function saveFavoriteFromMeal(event) {
@@ -2518,6 +2877,127 @@ function closeSavedMealModal() {
   savedMealEditDraft = null;
 }
 
+function saveWeightMeasurement({ entryId = "", date = today(), weightKg, targetWeight = 0, desiredPace = "" }) {
+  const value = Number(weightKg);
+  if (!Number.isFinite(value) || value < 20 || value > 400) return false;
+  const existing = state.weights.find((item) => item.id === entryId) || state.weights.find((item) => item.date === date);
+  const now = new Date().toISOString();
+  if (existing) {
+    Object.assign(existing, { date, weight: value, weightKg: value, updatedAt: now, createdAt: existing.createdAt || now });
+  } else {
+    state.weights.push({ id: crypto.randomUUID ? crypto.randomUUID() : id(), date, weight: value, weightKg: value, createdAt: now, updatedAt: now });
+  }
+  state.weights = Core.sortedWeights(state.weights);
+  state.profile.currentWeight = state.weights.at(-1)?.weightKg || value;
+  if (Number(targetWeight) > 0) state.profile.targetWeight = Number(targetWeight);
+  if (desiredPace) state.profile.desiredPace = desiredPace;
+  saveState();
+  return true;
+}
+
+function weightResultMarkup(summary = weightSummary()) {
+  return `<div class="weight-result">
+    <strong>Poids enregistré ✓</strong>
+    <div class="grid two">
+      ${metric("Poids du jour", `${fmt(summary.currentWeight, 1)} kg`)}
+      ${metric("Depuis la mesure précédente", summary.previous ? `${formatSigned(summary.deltaFromPrevious)} kg` : "Première mesure")}
+      ${metric("Moyenne sur 7 jours", summary.average7 ? `${fmt(summary.average7, 1)} kg` : "En cours")}
+      ${metric("Vers l’objectif", summary.targetWeight ? `${fmt(summary.goalProgress)} %` : "Objectif à définir")}
+    </div>
+    <p>${esc(trendMessage(summary))}</p>
+    <button class="primary-button wide" id="closeWeightResult" type="button">Continuer</button>
+  </div>`;
+}
+
+function openWeightModal(options = {}) {
+  closeWeightModal();
+  const editEntry = options.entryId ? state.weights.find((item) => item.id === options.entryId) : null;
+  const latest = editEntry?.weightKg || editEntry?.weight || latestWeight() || "";
+  const needsGoal = !profileNumber("targetWeight");
+  const overlay = document.createElement("div");
+  overlay.id = "weightModal";
+  overlay.className = "weight-overlay";
+  overlay.innerHTML = `<div class="weight-modal" role="dialog" aria-modal="true" aria-labelledby="weightModalTitle">
+    <div class="section-head"><div><p class="eyebrow">${editEntry ? "Corriger une mesure" : options.first ? "Poids de départ" : "Check-in"}</p><h2 id="weightModalTitle">${editEntry ? "Modifier mon poids" : "Ajouter mon poids"}</h2></div><button class="sheet-close" type="button" aria-label="Fermer" data-close-weight>×</button></div>
+    <p class="small">${latest ? `Dernier poids enregistré : ${fmt(latest, 1)} kg.` : "Ta première mesure servira de point de départ."}</p>
+    <form id="quickWeightForm" class="quick-weight-form">
+      <input type="hidden" name="entryId" value="${esc(editEntry?.id || "")}">
+      ${editEntry ? `<label>Date<input name="date" type="date" value="${esc(editEntry.date)}"></label>` : `<input type="hidden" name="date" value="${today()}">`}
+      <label class="weight-number-label">Poids (kg)<div class="weight-stepper"><button type="button" data-weight-step="-0.1" aria-label="Retirer 0,1 kilogramme">−0,1</button><input id="quickWeightInput" name="weightKg" type="number" inputmode="decimal" min="20" max="400" step="0.1" value="${esc(latest)}" required autofocus><button type="button" data-weight-step="0.1" aria-label="Ajouter 0,1 kilogramme">+0,1</button></div></label>
+      ${needsGoal && !editEntry ? `<div class="onboarding-goal"><p>Pour afficher ta progression, complète seulement les informations encore inconnues.</p><label>Poids souhaité (kg)<input name="targetWeight" type="number" inputmode="decimal" min="20" max="400" step="0.1" value="${esc(state.profile.targetWeight)}"></label><label>Rythme souhaité<select name="desiredPace"><option value="progressif">Progressif</option><option value="tres-progressif">Très progressif</option><option value="accompagne">À définir avec un professionnel</option></select></label></div>` : ""}
+      <button class="primary-button wide" type="submit">Enregistrer</button>
+    </form>
+    <div id="weightQuickResult"></div>
+  </div>`;
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add("visible"));
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay || event.target.closest("[data-close-weight]")) closeWeightModal();
+  });
+  $$("[data-weight-step]", overlay).forEach((button) => button.addEventListener("click", () => {
+    const input = $("#quickWeightInput");
+    const base = Number(input.value || latest || 0);
+    input.value = Math.max(20, Math.min(400, base + Number(button.dataset.weightStep))).toFixed(1);
+    input.focus();
+  }));
+  $("#quickWeightForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const saved = saveWeightMeasurement(Object.fromEntries(new FormData(event.currentTarget)));
+    if (!saved) {
+      toast("Saisis un poids compris entre 20 et 400 kg.");
+      return;
+    }
+    event.currentTarget.hidden = true;
+    $("#weightQuickResult").innerHTML = weightResultMarkup();
+    $("#closeWeightResult").addEventListener("click", () => {
+      closeWeightModal();
+      if (currentScreen === "weight") renderWeight();
+      else renderHome();
+      toast(checkInReward("weight"));
+    });
+  });
+  setTimeout(() => {
+    const input = $("#quickWeightInput");
+    input?.focus({ preventScroll: true });
+    input?.select();
+  }, 120);
+}
+
+function closeWeightModal() {
+  const modal = $("#weightModal");
+  if (!modal) return;
+  modal.classList.remove("visible");
+  setTimeout(() => modal.remove(), 160);
+}
+
+function weightChartMarkup() {
+  const all = Core.sortedWeights(state.weights);
+  const days = weightRange === "all" ? Infinity : Number(weightRange);
+  const start = Number.isFinite(days) ? Core.addDays(today(), -(days - 1)) : "0000-01-01";
+  const points = all.filter((item) => item.date >= start && item.date <= today());
+  if (!points.length) return `<div class="chart-empty">Ajoute une mesure pour afficher la courbe.</div>`;
+  const width = 320;
+  const height = 150;
+  const padX = 28;
+  const padY = 24;
+  const values = points.map((item) => item.weightKg);
+  const min = Math.min(...values) - 0.5;
+  const max = Math.max(...values) + 0.5;
+  const span = Math.max(1, max - min);
+  const coordinates = points.map((item, index) => ({
+    ...item,
+    x: points.length === 1 ? width / 2 : padX + index / (points.length - 1) * (width - padX * 2),
+    y: height - padY - (item.weightKg - min) / span * (height - padY * 2)
+  }));
+  const polyline = coordinates.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
+  return `<svg class="weight-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Évolution du poids, ${points.length} mesure(s)">
+    <line x1="${padX}" y1="${padY}" x2="${padX}" y2="${height - padY}" class="chart-axis"></line><line x1="${padX}" y1="${height - padY}" x2="${width - padX}" y2="${height - padY}" class="chart-axis"></line>
+    <text x="2" y="${padY + 4}">${fmt(max, 1)}</text><text x="2" y="${height - padY + 4}">${fmt(min, 1)}</text><polyline points="${polyline}" class="chart-line"></polyline>
+    ${coordinates.map((point) => `<circle cx="${point.x}" cy="${point.y}" r="4" class="chart-point"><title>${esc(point.date)} : ${fmt(point.weightKg, 1)} kg</title></circle>`).join("")}
+    <text x="${padX}" y="${height - 5}">${esc(points[0].date.slice(5))}</text><text x="${width - padX}" y="${height - 5}" text-anchor="end">${esc(points.at(-1).date.slice(5))}</text>
+  </svg>`;
+}
+
 function weightStats() {
   const sorted = (state.weights || []).map(weightRecord).filter((item) => isDateKey(item.date) && item.weight > 0).sort((a, b) => a.date.localeCompare(b.date));
   const first = sorted[0]?.weight || 0;
@@ -2530,45 +3010,51 @@ function weightStats() {
 }
 
 function renderWeight() {
-  const stats = weightStats();
-  const latest = stats.latest;
-  const previous = stats.sorted.length > 1 ? stats.sorted.at(-2)?.weight : null;
-  const delta = previous ? latest - previous : 0;
-  const goals = activeGoals();
+  const summary = weightSummary();
   $("#screen").innerHTML = `
-    <article class="card hero">
-      <p class="eyebrow">Suivi poids</p>
-      <div class="big-number">${latest ? `${fmt(latest, 1)} kg` : "À saisir"}</div>
-      <p class="small">${previous ? `${delta >= 0 ? "+" : ""}${fmt(delta, 1)} kg depuis la dernière mesure` : "Ajoute ton poids du jour."}</p>
+    <article class="card hero weight-hero">
+      <div><p class="eyebrow">Évolution du poids</p><div class="big-number">${summary.currentWeight ? `${fmt(summary.currentWeight, 1)} kg` : "À saisir"}</div><p>${esc(trendMessage(summary))}</p></div>
+      <button class="primary-button" id="quickAddWeight" type="button">Ajouter mon poids</button>
     </article>
     <article class="card">
-      <form id="weightForm" class="form-grid">
-        <label>Poids du jour<input name="weight" inputmode="decimal" value="${esc(latest || "")}"></label>
-        <button class="primary-button">Enregistrer</button>
-      </form>
-      <p class="small">Objectifs recalculés : ${goals.calories ? `${fmt(goals.calories)} kcal · ${fmt(goals.protein)} g protéines` : "profil à compléter"}</p>
+      <div class="grid two weight-summary-grid">
+        ${metric("Poids de départ", summary.startWeight ? `${fmt(summary.startWeight, 1)} kg` : "À compléter")}
+        ${metric("Poids actuel", summary.currentWeight ? `${fmt(summary.currentWeight, 1)} kg` : "À compléter")}
+        ${metric("Poids objectif", summary.targetWeight ? `${fmt(summary.targetWeight, 1)} kg` : "À définir")}
+        ${metric("Différence totale", summary.first && summary.current ? `${formatSigned(summary.totalDifference)} kg` : "En cours")}
+        ${metric("Moyenne 7 jours", summary.average7 ? `${fmt(summary.average7, 1)} kg` : "En cours")}
+        ${metric("Moyenne 30 jours", summary.average30 ? `${fmt(summary.average30, 1)} kg` : "En cours")}
+      </div>
     </article>
     <article class="card">
-      <h2>Progression</h2>
-      <div class="grid two">${metric("Poids de départ", stats.first ? `${fmt(stats.first, 1)} kg` : "À saisir")}${metric("Objectif", profileNumber("targetWeight") ? `${fmt(profileNumber("targetWeight"), 1)} kg` : "À définir")}${metric("Évolution totale", stats.first ? `${stats.totalChange >= 0 ? "+" : ""}${fmt(stats.totalChange, 1)} kg` : "À calculer")}${metric("Moyenne sur 7 jours", stats.average7 ? `${fmt(stats.average7, 1)} kg` : "Mesures insuffisantes")}</div>
-      <p class="small">Les variations quotidiennes sont normales. Mass+ ne modifie jamais l’objectif calorique automatiquement.</p>
+      <div class="section-head"><h2>Courbe</h2><div class="range-tabs" aria-label="Période du graphique">
+        <button type="button" data-weight-range="7" class="${weightRange === "7" ? "active" : ""}">7 j</button>
+        <button type="button" data-weight-range="30" class="${weightRange === "30" ? "active" : ""}">30 j</button>
+        <button type="button" data-weight-range="all" class="${weightRange === "all" ? "active" : ""}">Tout</button>
+      </div></div>
+      ${weightChartMarkup()}
     </article>
     <article class="card">
-      <h2>Historique</h2>
-      <div class="stack">${stats.sorted.slice(-10).reverse().map((item) => `<div class="row"><span>${esc(dateLabel(item.date))}</span><strong>${fmt(item.weight, 1)} kg</strong></div>`).join("") || `<p class="small">Aucune mesure.</p>`}</div>
-    </article>`;
-  $("#weightForm").addEventListener("submit", (event) => {
-    event.preventDefault();
-    const weight = Number(new FormData(event.currentTarget).get("weight"));
-    if (!weight) return;
-    state.profile.currentWeight = weight;
-    const existing = state.weights.find((item) => item.date === today());
-    if (existing) existing.weight = weight;
-    else state.weights.push({ date: today(), weight });
-    saveState();
-    toast("Poids enregistré.");
+      <h2>Historique des mesures</h2>
+      <p class="small">Tu peux corriger ou supprimer une mesure enregistrée par erreur.</p>
+      <div class="stack weight-history">${Core.sortedWeights(state.weights).reverse().map((item) => `<div class="weight-row"><span><strong>${esc(dateLabel(item.date))}</strong><small>${esc(item.date)}</small></span><strong>${fmt(item.weightKg, 1)} kg</strong><button class="secondary-button compact" type="button" data-edit-weight="${esc(item.id)}">Modifier</button><button class="danger-button compact" type="button" data-delete-weight="${esc(item.id)}">Supprimer</button></div>`).join("") || `<p class="small">Aucune mesure.</p>`}</div>
+    </article>
+    <p class="privacy-reminder">Toutes les mesures restent sur cet appareil et sont incluses dans la sauvegarde Mass+.</p>`;
+  $("#quickAddWeight").addEventListener("click", () => openWeightModal());
+  $$("[data-weight-range]").forEach((button) => button.addEventListener("click", () => {
+    weightRange = button.dataset.weightRange;
     renderWeight();
-  });
+  }));
+  $$("[data-edit-weight]").forEach((button) => button.addEventListener("click", () => openWeightModal({ entryId: button.dataset.editWeight })));
+  $$("[data-delete-weight]").forEach((button) => button.addEventListener("click", () => {
+    const entry = state.weights.find((item) => item.id === button.dataset.deleteWeight);
+    if (!entry || !confirm(`Supprimer la mesure de ${fmt(entry.weightKg ?? entry.weight, 1)} kg du ${entry.date} ?`)) return;
+    state.weights = state.weights.filter((item) => item.id !== entry.id);
+    state.profile.currentWeight = Core.sortedWeights(state.weights).at(-1)?.weightKg || "";
+    saveState();
+    toast("Mesure supprimée. Les autres données sont conservées.");
+    renderWeight();
+  }));
 }
 
 function renderProfile() {
@@ -2583,6 +3069,12 @@ function renderProfile() {
         <label>Taille (cm)<input name="height" inputmode="numeric" value="${esc(state.profile.height)}"></label>
         <label>Poids actuel<input name="currentWeight" inputmode="decimal" value="${esc(latestWeight() || "")}"></label>
         <label>Poids cible<input name="targetWeight" inputmode="decimal" value="${esc(state.profile.targetWeight)}"></label>
+        <label>Fréquence de pesée<select name="weighingFrequency">
+          <option value="daily">Tous les jours</option>
+          <option value="three">Trois fois par semaine</option>
+          <option value="weekly">Une fois par semaine</option>
+        </select></label>
+        <div class="metric weighing-note"><span>Jours proposés</span><strong>${state.profile.weighingFrequency === "daily" ? "Chaque jour" : state.profile.weighingFrequency === "weekly" ? "Samedi" : "Lundi · mercredi · samedi"}</strong></div>
         <label>Activité<select name="activity">${Object.keys(ACTIVITY_FACTORS).map((activity) => `<option>${esc(activity)}</option>`).join("")}</select></label>
         ${goalFieldsMarkup(goals)}
         <button class="primary-button">Sauvegarder</button>
@@ -2611,6 +3103,7 @@ function renderProfile() {
     <p class="small app-version">Mass+ v${APP_VERSION}</p>`;
   $("[name='sex']").value = state.profile.sex;
   $("[name='activity']").value = state.profile.activity;
+  $("[name='weighingFrequency']").value = Core.weighingFrequency(state.profile);
   bindGoalMode();
   bindProfileForm();
   bindExclusionForm();
@@ -2663,14 +3156,22 @@ function bindProfileForm() {
       height: Number(data.height || 0),
       currentWeight: Number(data.currentWeight || 0),
       targetWeight: Number(data.targetWeight || 0),
+      weighingFrequency: data.weighingFrequency || "three",
+      weighingDays: data.weighingFrequency === "daily" ? [0, 1, 2, 3, 4, 5, 6] : data.weighingFrequency === "weekly" ? [6] : [1, 3, 6],
       activity: data.activity,
       manualCalories: Number(data.manualCalories || state.profile.manualCalories || 0),
       manualProtein: Number(data.manualProtein || state.profile.manualProtein || 0)
     });
     if (state.profile.currentWeight) {
       const existing = state.weights.find((item) => item.date === today());
-      if (existing) existing.weight = state.profile.currentWeight;
-      else state.weights.push({ date: today(), weight: state.profile.currentWeight });
+      if (existing) {
+        existing.weight = state.profile.currentWeight;
+        existing.weightKg = state.profile.currentWeight;
+        existing.updatedAt = new Date().toISOString();
+      } else {
+        const now = new Date().toISOString();
+        state.weights.push({ id: crypto.randomUUID ? crypto.randomUUID() : id(), date: today(), weight: state.profile.currentWeight, weightKg: state.profile.currentWeight, createdAt: now, updatedAt: now });
+      }
     }
     saveState();
     toast("Profil sauvegardé.");
@@ -2709,6 +3210,7 @@ function backupDataFromState(source = state) {
     photos: snapshot.photos || [],
     pendingPhotoMeal: snapshot.pendingPhotoMeal || "déjeuner",
     untrackedDays: snapshot.untrackedDays || [],
+    engagement: snapshot.engagement || emptyState().engagement,
     migrations: snapshot.migrations || {}
   };
 }
@@ -3363,7 +3865,7 @@ async function renderPhotoList() {
     const stored = await idbGet(meta.id).catch(() => null);
     const url = stored?.blob ? URL.createObjectURL(stored.blob) : "";
     const total = meta.analysisTotals ? `<div class="macro">Confirmé : ${fmt(meta.analysisTotals.kcal)} kcal · ${fmt(meta.analysisTotals.protein, 1)} g prot.</div>` : "";
-    return `<div class="photo-card">${url ? `<img src="${url}" alt="Photo repas">` : ""}<div><strong>${esc(meta.meal)}</strong><div class="macro">${esc(meta.date)}</div>${total}<p class="photo-share-help">Choisissez ChatGPT, Gemini ou votre IA préférée. Le prompt est copié automatiquement si nécessaire.</p><div class="photo-actions"><button class="primary-button" data-photo-share="${esc(meta.id)}" type="button">Partager à mon IA</button><button class="secondary-button compact" data-photo-import="${esc(meta.id)}" type="button">Coller la réponse IA</button><button class="secondary-button compact" data-photo-manual="${esc(meta.id)}" type="button">Saisie manuelle</button><button class="danger-button compact" data-delete-photo="${esc(meta.id)}" type="button">Supprimer</button></div></div></div>`;
+    return `<div class="photo-card">${url ? `<img src="${url}" alt="Photo repas">` : ""}<div><strong>${esc(meta.meal)}</strong><div class="macro">${esc(meta.date)}</div>${total}<p class="photo-share-help">Dans ChatGPT, touche Copier sur le bloc JSON, puis reviens dans Mass+.</p><div class="photo-actions"><button class="primary-button" data-photo-share="${esc(meta.id)}" type="button">Partager à mon IA</button><button class="secondary-button compact" data-photo-import="${esc(meta.id)}" type="button">Coller le résultat IA</button><button class="secondary-button compact" data-photo-manual="${esc(meta.id)}" type="button">Saisie manuelle</button><button class="danger-button compact" data-delete-photo="${esc(meta.id)}" type="button">Supprimer</button></div></div></div>`;
   }));
   node.innerHTML = cards.join("");
   $$('[data-photo-share]').forEach((button) => button.addEventListener("click", () => sharePhotoWithAi(button.dataset.photoShare)));
@@ -3403,10 +3905,10 @@ function openAiShareModal(photoId) {
       <button class="secondary-button" data-ai-share-action="copy" type="button">Copier le prompt</button>
       <button class="secondary-button" data-ai-share-action="chatgpt" type="button">Ouvrir ChatGPT</button>
       <button class="secondary-button" data-ai-share-action="gemini" type="button">Ouvrir Gemini</button>
-      <button class="secondary-button" data-ai-share-action="import" type="button">Coller la réponse IA</button>
+      <button class="secondary-button" data-ai-share-action="import" type="button">Coller le résultat IA</button>
       <button class="secondary-button" data-close-ai-share type="button">Annuler</button>
     </div>
-    <p class="import-status" id="aiShareStatus" role="status">Parcours conseillé : partagez ou joignez la photo, collez le prompt, puis revenez coller la réponse dans Mass+.</p>
+    <p class="import-status" id="aiShareStatus" role="status">Dans ChatGPT, touche Copier sur le bloc JSON, puis reviens dans Mass+.</p>
   </div>`;
   document.body.appendChild(overlay);
   requestAnimationFrame(() => overlay.classList.add("visible"));
@@ -3512,7 +4014,7 @@ function renderShareFallback(meta, copied) {
     <p class="small">La feuille de partage de ce navigateur ne permet pas d’envoyer la photo. Vous pouvez copier le prompt puis partager la photo depuis l’app Photos.</p>
     <label>Prompt d’analyse<textarea id="sharePromptFallback" readonly></textarea></label>
     <p class="small" id="shareFallbackStatus">${copied ? "Prompt déjà copié." : "Sélectionnez le prompt si la copie automatique est refusée."}</p>
-    <div class="inline-actions"><button class="primary-button" id="copyPromptFallback" type="button">Copier le prompt</button><button class="secondary-button" id="openImportFallback" type="button">Coller la réponse IA</button></div>
+    <div class="inline-actions"><button class="primary-button" id="copyPromptFallback" type="button">Copier le prompt</button><button class="secondary-button" id="openImportFallback" type="button">Coller le résultat IA</button></div>
   </article>`;
   $("#sharePromptFallback").value = MASS_PLUS_AI_PROMPT;
   $("#closeShareFallback").addEventListener("click", () => { panel.innerHTML = ""; });
@@ -3540,7 +4042,7 @@ function openAiImportModal(photoIdOrMeta) {
     <label for="aiResponseText">Réponse complète</label>
     <textarea id="aiResponseText" placeholder="Collez ici toute la réponse de votre IA…" spellcheck="false"></textarea>
     <p class="import-status" id="aiImportStatus" role="status"></p>
-    <div class="modal-actions"><button class="secondary-button" id="pasteAiClipboard" type="button">Coller le résultat</button><button class="primary-button" id="importAiResponse" type="button">Analyser la réponse</button><button class="secondary-button" id="clearAiResponse" type="button">Effacer</button><button class="secondary-button" data-close-ai-import type="button">Annuler</button></div>
+    <div class="modal-actions"><button class="secondary-button" id="pasteAiClipboard" type="button">Coller le résultat IA</button><button class="primary-button" id="importAiResponse" type="button">Analyser le résultat collé</button><button class="secondary-button" id="clearAiResponse" type="button">Effacer</button><button class="secondary-button" data-close-ai-import type="button">Annuler</button></div>
     <div class="inline-actions import-fallback-actions" id="aiImportFallbackActions" hidden>
       <button class="secondary-button compact" id="retryAiParse" type="button">Réessayer la lecture</button>
       <button class="secondary-button compact" id="importAiText" type="button">Importer comme texte</button>
@@ -3555,7 +4057,7 @@ function openAiImportModal(photoIdOrMeta) {
   overlay.addEventListener("keydown", (event) => {
     if (event.key === "Escape") closeAiImportModal();
   });
-  $("#pasteAiClipboard").addEventListener("click", pasteAiClipboard);
+  $("#pasteAiClipboard").addEventListener("click", () => pasteAiClipboard(meta));
   $("#importAiResponse").addEventListener("click", () => importAiResponse(meta));
   $("#clearAiResponse").addEventListener("click", () => { $("#aiResponseText").value = ""; $("#aiImportStatus").textContent = ""; $("#aiImportFallbackActions").hidden = true; });
   $("#retryAiParse").addEventListener("click", () => importAiResponse(meta));
@@ -3574,20 +4076,21 @@ function closeAiImportModal() {
   setTimeout(() => modal.remove(), 160);
 }
 
-async function pasteAiClipboard() {
+async function pasteAiClipboard(meta) {
   const status = $("#aiImportStatus");
   if (!navigator.clipboard?.readText) {
     $("#aiResponseText")?.focus();
-    status.textContent = "Collez ici le résultat copié depuis Gemini.";
+    status.textContent = "Lecture automatique indisponible. Colle le bloc JSON ici, puis touche « Analyser le résultat collé ».";
     return;
   }
   try {
     $("#aiResponseText").value = await navigator.clipboard.readText();
-    status.textContent = "Réponse collée. Vérifiez-la puis importez.";
+    status.textContent = "Résultat collé. Analyse en cours…";
+    importAiResponse(meta);
   } catch (error) {
     console.info("Clipboard read unavailable", error?.name || "clipboard_error");
     $("#aiResponseText")?.focus();
-    status.textContent = "Collez ici le résultat copié depuis Gemini.";
+    status.textContent = "Lecture automatique refusée. Colle le bloc JSON ici, puis touche « Analyser le résultat collé ».";
   }
 }
 
@@ -3600,8 +4103,9 @@ function importAiResponse(meta) {
     setTimeout(renderPhotoAnalysisDraft, 180);
   } catch (error) {
     console.info("AI response import rejected", error.message);
-    status.textContent = "Mass+ n’a pas reconnu automatiquement toute la réponse. Vous pouvez la corriger ou importer les valeurs manuellement.";
+    status.textContent = "Le résultat n’a pas pu être lu. Copie uniquement le bloc JSON généré par l’IA.";
     $("#aiImportFallbackActions").hidden = false;
+    $("#aiResponseText")?.focus();
   }
 }
 
@@ -3613,7 +4117,7 @@ function importAiResponseAsText(meta) {
     closeAiImportModal();
     setTimeout(renderPhotoAnalysisDraft, 180);
   } catch {
-    status.textContent = "Mass+ n’a pas reconnu automatiquement toute la réponse. Vous pouvez la corriger ou importer les valeurs manuellement.";
+    status.textContent = "Le résultat n’a pas pu être lu. Copie uniquement le bloc JSON généré par l’IA.";
     $("#aiImportFallbackActions").hidden = false;
   }
 }
@@ -3690,17 +4194,30 @@ function jsonObjectCandidates(text) {
 }
 
 function normalizeImportedMeal(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Objet JSON invalide.");
+  const mealNameRaw = getKey(raw, ["mealName", "meal", "title", "nomRepas", "nom"]);
+  const mealName = String(mealNameRaw || "").trim().slice(0, 120);
+  if (!mealName) throw new Error("Nom du repas introuvable.");
   const foodsRaw = getKey(raw, ["foods", "aliments", "ingredients", "items"]);
   if (!Array.isArray(foodsRaw)) throw new Error("Liste d’aliments introuvable.");
+  if (!foodsRaw.length) throw new Error("La liste d’aliments est vide.");
   const foods = foodsRaw.slice(0, 24).map((food, index) => normalizeImportedFood(food, index));
+  const totalsRaw = getKey(raw, ["totals", "total", "totaux"]);
+  if (!totalsRaw || typeof totalsRaw !== "object" || Array.isArray(totalsRaw)) throw new Error("Total du repas introuvable.");
+  const declaredTotals = {
+    kcal: parseNutritionNumber(getKey(totalsRaw, ["calories", "kcal", "energy", "energie", "énergie"]), "calories", "le total"),
+    protein: parseNutritionNumber(getKey(totalsRaw, ["protein", "proteins", "proteines", "protéines"]), "protéines", "le total"),
+    carbs: parseNutritionNumber(getKey(totalsRaw, ["carbohydrates", "carbs", "glucides"]), "glucides", "le total"),
+    fat: parseNutritionNumber(getKey(totalsRaw, ["fat", "fats", "lipid", "lipids", "lipides"]), "lipides", "le total")
+  };
   const uncertaintiesRaw = getKey(raw, ["uncertainties", "incertitudes", "notes", "aConfirmer"]);
   const uncertainties = Array.isArray(uncertaintiesRaw)
     ? uncertaintiesRaw.map((item) => String(item || "").trim()).filter(Boolean).join(" · ")
     : String(uncertaintiesRaw || "").trim();
-  const mealName = getKey(raw, ["mealName", "meal", "title", "nomRepas", "nom"]);
   return {
-    mealName: String(mealName || "Repas importé").trim().slice(0, 120) || "Repas importé",
+    mealName,
     foods,
+    totals: declaredTotals,
     uncertainties: uncertainties.slice(0, 1000)
   };
 }
@@ -3902,9 +4419,9 @@ function renderPhotoAnalysisDraft() {
     <button class="secondary-button wide analysis-add-row" id="analysisAddFood" type="button">Ajouter un aliment</button>
     <div class="analysis-totals" id="analysisTotals">${analysisTotalsMarkup()}</div>
     <div class="inline-actions analysis-final-actions">
-      <button class="secondary-button compact" id="focusCorrection" type="button">Corriger</button>
+      <button class="secondary-button compact" id="focusCorrection" type="button">Modifier</button>
       <button class="secondary-button compact" id="cancelPhotoAnalysis" type="button">Annuler</button>
-      <button class="primary-button" id="confirmPhotoMeal" type="button">Confirmer et ajouter au journal</button>
+      <button class="primary-button" id="confirmPhotoMeal" type="button">Ajouter au Journal</button>
     </div>
   </article>`;
   bindPhotoAnalysisDraft();
@@ -4135,7 +4652,7 @@ async function init() {
       location.reload();
     });
     const registerServiceWorker = () => navigator.serviceWorker
-      .register("./service-worker.js?v=1.2.1", { updateViaCache: "none" })
+      .register("./service-worker.js?v=1.3.0", { updateViaCache: "none" })
       .then((registration) => registration.update())
       .catch(() => undefined);
     if (document.readyState === "complete") registerServiceWorker();

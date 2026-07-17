@@ -1,4 +1,4 @@
-# Mass+ V1.2.1
+# Mass+ V1.3.0
 
 Mass+ est une PWA mobile-first gratuite pour suivre les repas, calories, protéines et l’évolution du poids. Elle fonctionne sur GitHub Pages, sans compte et sans backend obligatoire.
 
@@ -11,6 +11,9 @@ Application publique : https://guitch-alt.github.io/mass-plus/
 - Repas enregistrés regroupés dans **Recettes > Mes favorites**, avec portions, modification et ajout direct au journal.
 - Sauvegarde JSON versionnée et restauration validée avec transaction locale et rollback.
 - Journal fiabilisé avec dates locales, journées non suivies, calories restantes et écritures IndexedDB sérialisées.
+- Check-in quotidien non culpabilisant, pesée express, fréquence adaptable, jours actifs, missions courtes et bilans du soir/hebdomadaires.
+- Évolution du poids avec modification/suppression, moyennes sur 7 et 30 jours et graphique 7 jours, 30 jours ou complet.
+- Reprise du dernier repas et suggestions « Tu manges souvent » calculées uniquement depuis les données locales.
 - Ajout central simplifié : dictée express prioritaire, photo ou saisie manuelle, avec scanner et repas enregistrés en options secondaires.
 - Open Food Facts utilisé uniquement après une recherche en ligne ou un scan demandé par l’utilisateur.
 - Scanner compatible iPhone et Android grâce à ZXing, avec caméra arrière et saisie manuelle de secours.
@@ -45,12 +48,12 @@ Le parcours est volontaire et contrôlé par l’utilisateur :
 4. joindre volontairement la photo dans l’application IA choisie ;
 5. coller le prompt ;
 6. copier la réponse ;
-7. revenir dans Mass+ et toucher **Coller la réponse IA** ;
+7. toucher **Copier** sur l’unique bloc JSON, revenir dans Mass+ puis toucher **Coller le résultat IA** ;
 8. vérifier et corriger chaque valeur avant l’ajout au journal.
 
-Le prompt est optimisé pour obtenir un bloc `json` facile à copier. La photo n’est transmise qu’à l’application explicitement choisie. iOS peut ne pas proposer ChatGPT ou Gemini dans la feuille de partage : ce n’est pas un bug de Mass+, il faut alors ouvrir l’app ou le site manuellement.
+Tous les prompts alimentaires partagent la même consigne stricte : un unique bloc commençant par ` ```json ` et se terminant par ` ``` `, sans texte avant ou après. La photo n’est transmise qu’à l’application explicitement choisie. iOS peut ne pas proposer ChatGPT ou Gemini dans la feuille de partage : ce n’est pas un bug de Mass+, il faut alors ouvrir l’app ou le site manuellement.
 
-L’importeur accepte le JSON brut, les blocs Markdown `json`, du texte avant/après le JSON, des clés françaises/anglaises, des nombres avec virgule décimale et un fallback texte prudent. Le contenu est traité comme du texte avec `JSON.parse` : aucun code n’est exécuté. Les totaux sont toujours recalculés depuis les aliments.
+L’importeur retire les balises Markdown, isole l’objet, valide le nom du repas, les aliments, les nombres et les totaux, tout en conservant les anciens alias français/anglais. Si le presse-papiers est refusé, la zone de collage manuel reste disponible. Le contenu est traité avec `JSON.parse` : aucun code n’est exécuté. Les totaux affichés sont recalculés depuis les aliments.
 
 ## Limites connues
 
@@ -64,6 +67,7 @@ L’importeur accepte le JSON brut, les blocs Markdown `json`, du texte avant/ap
 ```bash
 npm start
 npm run check
+npm test
 ```
 
 Ouvrir ensuite `http://localhost:8080`.

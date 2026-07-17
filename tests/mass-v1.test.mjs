@@ -1,8 +1,11 @@
 import fs from "node:fs";
 import vm from "node:vm";
+import { createRequire } from "node:module";
 
 const app = fs.readFileSync(new URL("../app.js", import.meta.url), "utf8").replace(/\ninit\(\);\s*$/, "");
 const foods = JSON.parse(fs.readFileSync(new URL("../data/aliments-fr.json", import.meta.url), "utf8"));
+const require = createRequire(import.meta.url);
+const MassPlusCore = require("../engagement-core.js");
 
 for (const expected of [
   "Dicter mon repas",
@@ -67,22 +70,48 @@ assert(calculated.kcal === 207, "Calcul kcal pour 90 g incorrect");
 assert(calculated.protein === 7.2, "Calcul protéines pour 90 g incorrect");
 
 const samples = [
-  '{"mealName":"Test","foods":[{"name":"Banane","quantity":"120 g","calories":105,"protein":1.3,"carbohydrates":27,"fat":0.4}]}',
-  'Voici la réponse:\\n\\\`\\\`\\\`json\\n{"nomRepas":"Test","aliments":[{"nom":"Banane","quantité":"120 g","kcal":"105","protéines":"1,3","glucides":"27","lipides":"0,4",}]}\\n\\\`\\\`\\\`\\nBon appétit',
-  'texte avant {"meal":"Test","items":[{"food":"Tomate","amount":"80 g","energy":"14","proteins":"0,7 g","carbs":"2,1","fats":"0,2"}]} texte après',
-  '{"mealName":"Test","foods":[{"name":"Avocat","quantity":"100 g","calories":160,"protein":2,"carbohydrates":9,"lipids":15}]}'
+  '{"mealName":"Test","foods":[{"name":"Banane","quantity":"120 g","calories":105,"protein":1.3,"carbohydrates":27,"fat":0.4}],"totals":{"calories":105,"protein":1.3,"carbohydrates":27,"fat":0.4}}',
+  'Voici la réponse:\\n\\\`\\\`\\\`json\\n{"nomRepas":"Test","aliments":[{"nom":"Banane","quantité":"120 g","kcal":"105","protéines":"1,3","glucides":"27","lipides":"0,4",}],"totaux":{"kcal":"105","protéines":"1,3","glucides":"27","lipides":"0,4"}}\\n\\\`\\\`\\\`\\nBon appétit',
+  'texte avant {"meal":"Test","items":[{"food":"Tomate","amount":"80 g","energy":"14","proteins":"0,7 g","carbs":"2,1","fats":"0,2"}],"total":{"energy":14,"proteins":0.7,"carbs":2.1,"fats":0.2}} texte après',
+  '{"mealName":"Test","foods":[{"name":"Avocat","quantity":"100 g","calories":160,"protein":2,"carbohydrates":9,"lipids":15}],"totals":{"calories":160,"protein":2,"carbohydrates":9,"lipids":15}}'
 ];
 for (const sample of samples) {
   const parsed = extractAndParseAIResponse(sample);
   assert(parsed.foods.length > 0, "Import IA sans aliment");
+  assert(parsed.mealName === "Test", "Le nom du repas n'est pas conservé");
+  assert(typeof parsed.totals.kcal === "number", "Les totaux ne sont pas validés");
 }
 
-const matchedImport = extractAndParseAIResponse('{"mealName":"Test","foods":[{"name":"banane mûre","quantity":"120 g","calories":105,"protein":1.3,"carbohydrates":27,"fat":0.4}]}');
+let missingMealNameRejected = false;
+try {
+  extractAndParseAIResponse('{"foods":[{"name":"Banane","quantity":"120 g","calories":105,"protein":1.3,"carbohydrates":27,"fat":0.4}],"totals":{"calories":105,"protein":1.3,"carbohydrates":27,"fat":0.4}}');
+} catch {
+  missingMealNameRejected = true;
+}
+assert(missingMealNameRejected, "Un repas sans mealName devrait être refusé");
+
+let missingTotalsRejected = false;
+try {
+  extractAndParseAIResponse('{"mealName":"Test","foods":[{"name":"Banane","quantity":"120 g","calories":105,"protein":1.3,"carbohydrates":27,"fat":0.4}]}');
+} catch {
+  missingTotalsRejected = true;
+}
+assert(missingTotalsRejected, "Un repas sans totals devrait être refusé");
+
+let invalidNutritionRejected = false;
+try {
+  extractAndParseAIResponse('{"mealName":"Test","foods":[{"name":"Banane","quantity":"120 g","calories":"inconnu","protein":1.3,"carbohydrates":27,"fat":0.4}],"totals":{"calories":105,"protein":1.3,"carbohydrates":27,"fat":0.4}}');
+} catch {
+  invalidNutritionRejected = true;
+}
+assert(invalidNutritionRejected, "Une valeur nutritionnelle non numérique devrait être refusée");
+
+const matchedImport = extractAndParseAIResponse('{"mealName":"Test","foods":[{"name":"banane mûre","quantity":"120 g","calories":105,"protein":1.3,"carbohydrates":27,"fat":0.4}],"totals":{"calories":105,"protein":1.3,"carbohydrates":27,"fat":0.4}}');
 assert(matchedImport.foods[0].localFoodId === "banane", "Correspondance IA locale échouée");
 
 let ambiguousRejected = false;
 try {
-  extractAndParseAIResponse('{"mealName":"Un","foods":[{"name":"Banane","quantity":"100 g","calories":92,"protein":1.1,"carbohydrates":20,"fat":0.3}]} {"mealName":"Deux","foods":[{"name":"Skyr","quantity":"100 g","calories":60,"protein":10,"carbohydrates":4,"fat":0.2}]}');
+  extractAndParseAIResponse('{"mealName":"Un","foods":[{"name":"Banane","quantity":"100 g","calories":92,"protein":1.1,"carbohydrates":20,"fat":0.3}],"totals":{"calories":92,"protein":1.1,"carbohydrates":20,"fat":0.3}} {"mealName":"Deux","foods":[{"name":"Skyr","quantity":"100 g","calories":60,"protein":10,"carbohydrates":4,"fat":0.2}],"totals":{"calories":60,"protein":10,"carbohydrates":4,"fat":0.2}}');
 } catch (error) {
   ambiguousRejected = /plusieurs|ambigu/i.test(error.message);
 }
@@ -95,11 +124,17 @@ const voiceDescription = "Deux tartines avec du beurre, un skyr et une banane.";
 const voicePrompt = buildVoiceAiPrompt(voiceDescription);
 assert(voicePrompt.includes(voiceDescription), "La dictée manque dans le prompt vocal");
 assert(voicePrompt.includes("unique objet JSON valide"), "Le prompt vocal ne demande pas un JSON unique");
+assert(voicePrompt.includes("commençant exactement par \\\`\\\`\\\`json et se terminant par \\\`\\\`\\\`"), "Le prompt vocal n'impose pas un bloc JSON copiable");
+assert(voicePrompt.includes("n’écris aucun texte avant le bloc de code"), "Le prompt vocal autorise du texte avant le JSON");
+assert(voicePrompt.includes("n’écris aucun texte après le bloc de code"), "Le prompt vocal autorise du texte après le JSON");
 assert(voicePrompt.includes("N'invente aucun aliment"), "Le prompt vocal autorise des aliments inventés");
 assert(voicePrompt.includes("estimation raisonnable et prudente"), "Le prompt vocal ne gère pas les quantités imprécises");
 for (const field of ["mealName", "foods", "quantity", "calories", "protein", "carbohydrates", "fat", "totals", "uncertainties"]) {
   assert(voicePrompt.includes('"' + field + '"'), "Champ JSON vocal manquant : " + field);
 }
+assert(MASS_PLUS_AI_PROMPT.includes(AI_JSON_FORMAT_INSTRUCTIONS), "Le prompt photo n'utilise pas les instructions JSON communes");
+assert(voicePrompt.includes(AI_JSON_FORMAT_INSTRUCTIONS), "Le prompt vocal n'utilise pas les instructions JSON communes");
+assert(AI_JSON_FORMAT_INSTRUCTIONS.includes('"uncertainties": []'), "Les incertitudes doivent utiliser un tableau");
 
 const legacyMeal = {
   id: "legacy-test",
@@ -176,7 +211,7 @@ const context = {
   },
   indexedDB: {},
   navigator: { onLine: true },
-  window: { addEventListener: () => undefined },
+  window: { addEventListener: () => undefined, MassPlusCore },
   document: { querySelector: () => null, querySelectorAll: () => [] },
   setTimeout,
   clearTimeout,
@@ -185,4 +220,4 @@ const context = {
 };
 
 vm.runInNewContext(`${app}\n${testCode}`, context, { timeout: 5000 });
-console.log("Tests Mass+ V1.2.1 OK");
+console.log("Tests Mass+ V1.3.0 OK");
