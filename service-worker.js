@@ -1,10 +1,10 @@
-const CACHE_NAME = "mass-plus-v1-3-0";
+const CACHE_NAME = "mass-plus-v1-4-0";
 const ASSETS = [
   "./",
   "./index.html",
-  "./style.css?v=1.3.0",
-  "./engagement-core.js?v=1.3.0",
-  "./app.js?v=1.3.0",
+  "./style.css?v=1.4.0",
+  "./engagement-core.js?v=1.4.0",
+  "./app.js?v=1.4.0",
   "./vendor/zxing-browser.min.js",
   "./manifest.json",
   "./data/aliments-fr.json",

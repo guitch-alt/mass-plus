@@ -82,10 +82,15 @@ assert.match(styleSource, /input, select, textarea[\s\S]*font-size: 16px/);
 assert.match(styleSource, /@media \(prefers-reduced-motion: reduce\)/);
 assert.match(styleSource, /\.stories[\s\S]*grid-template-columns: repeat\(4/);
 assert.match(indexSource, /engagement-core\.js/);
-assert.match(appSource, /service-worker\.js\?v=1\.3\.0/);
+assert.match(indexSource, /\.\/style\.css\?v=1\.4\.0/);
+assert.match(indexSource, /\.\/app\.js\?v=1\.4\.0/);
+assert.match(appSource, /service-worker\.js\?v=1\.4\.0/);
 assert.equal(manifest.display, "standalone");
+assert.equal(manifest.start_url, "./");
 assert.ok(manifest.icons.some((icon) => icon.sizes === "192x192"));
 assert.ok(manifest.icons.some((icon) => icon.sizes === "512x512"));
 assert.match(workerSource, /engagement-core\.js/);
+assert.match(workerSource, /mass-plus-v1-4-0/);
+assert.match(workerSource, /\.\/data\/aliments-fr\.json/);
 
 console.log("Tests engagement Mass+ OK");

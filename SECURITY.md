@@ -13,7 +13,7 @@ Les fonctions locales restent utilisables hors ligne après le premier chargemen
 - Open Food Facts est contacté uniquement après une recherche en ligne ou un scan demandé par l’utilisateur.
 - Mass+ n’appelle aucune API d’IA, OpenAI, Gemini ou Supabase.
 - Une photo n’est partagée qu’après l’action volontaire **Partager à mon IA**, via la feuille de partage native ou l’application/site choisi par l’utilisateur.
-- ChatGPT et Gemini sont ouverts uniquement via des URL HTTPS publiques.
+- Mass+ ne force l’ouverture d’aucune IA et ne promet pas qu’une application particulière sera disponible dans la feuille de partage.
 
 ## Import de réponse IA
 
@@ -36,4 +36,4 @@ Mass+ est une PWA publique : elle réduit les risques raisonnables côté fronte
 
 ## Sauvegarde et restauration
 
-Les sauvegardes JSON sont versionnées et validées avant toute écriture. La restauration remplace l’état dans une transaction IndexedDB unique et conserve l’état précédent en mémoire pour permettre un rollback en cas d’échec. Les fichiers image ne sont pas inclus dans le JSON afin d’éviter des sauvegardes trop volumineuses ; leurs métadonnées restent exportées.
+Les sauvegardes JSON sont versionnées et validées avant toute écriture. La restauration permet une fusion ou un remplacement dans une transaction IndexedDB unique. Avant un remplacement, une copie de sécurité est enregistrée localement ; l’opération est annulée si cette copie n’est pas possible. L’état précédent reste aussi en mémoire pour permettre un rollback en cas d’échec. Les fichiers image ne sont pas inclus dans le JSON afin d’éviter des sauvegardes trop volumineuses ; leurs métadonnées restent exportées.

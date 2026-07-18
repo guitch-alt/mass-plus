@@ -1,4 +1,4 @@
-# Mass+ V1.3.0
+# Mass+ V1.4.0
 
 Mass+ est une PWA mobile-first gratuite pour suivre les repas, calories, protéines et l’évolution du poids. Elle fonctionne sur GitHub Pages, sans compte et sans backend obligatoire.
 
@@ -7,9 +7,9 @@ Application publique : https://guitch-alt.github.io/mass-plus/
 ## Fonctionnement
 
 - Journal, profil, poids, favoris, aliments personnels et photos stockés localement dans IndexedDB.
-- Banque alimentaire locale enrichie disponible hors ligne, avec valeurs nutritionnelles génériques moyennes.
+- Banque alimentaire locale de 1 187 références disponible hors ligne, avec valeurs nutritionnelles génériques moyennes.
 - Repas enregistrés regroupés dans **Recettes > Mes favorites**, avec portions, modification et ajout direct au journal.
-- Sauvegarde JSON versionnée et restauration validée avec transaction locale et rollback.
+- Sauvegarde JSON versionnée, fusion ou remplacement validé, copie de sécurité locale et rollback.
 - Journal fiabilisé avec dates locales, journées non suivies, calories restantes et écritures IndexedDB sérialisées.
 - Check-in quotidien non culpabilisant, pesée express, fréquence adaptable, jours actifs, missions courtes et bilans du soir/hebdomadaires.
 - Évolution du poids avec modification/suppression, moyennes sur 7 et 30 jours et graphique 7 jours, 30 jours ou complet.
@@ -22,9 +22,9 @@ Application publique : https://guitch-alt.github.io/mass-plus/
 
 ## Banque alimentaire locale
 
-La base locale contient des aliments français courants : légumes, fruits, condiments, boissons, protéines, féculents, légumineuses, produits sucrés et collations. Les valeurs sont des estimations génériques pour 100 g ou 100 ml, pas des valeurs exactes de produits de marque.
+La base locale contient 1 187 aliments français courants : légumes, fruits, condiments, boissons, protéines, féculents, légumineuses, produits laitiers, viennoiseries, pâtisseries, biscuits, collations et plats usuels. Les valeurs sont des estimations génériques pour 100 g, 100 ml ou une unité indiquée, pas des valeurs exactes de produits de marque.
 
-La Banque n’affiche jamais tout le catalogue au chargement : elle montre seulement les aliments favoris et récemment utilisés, puis jusqu’à 20 résultats après une recherche. La recherche locale ignore accents, majuscules, apostrophes, singulier/pluriel, accepte les recherches partielles et quelques fautes simples. Exemples : `oeufs`, `tomates`, `concom`, `balsamique`, `haricot rouge`.
+La Banque n’affiche jamais tout le catalogue au chargement : elle montre seulement les aliments favoris et récemment utilisés, puis jusqu’à 20 résultats après une recherche. La recherche locale pré-indexée ignore accents, majuscules, apostrophes et ordre des mots, gère raisonnablement singulier/pluriel, synonymes, recherches partielles et fautes simples. Exemples : `oeufs`, `pain chocolat`, `chocolatine`, `steak 5`, `yahourt`, `café lait`.
 
 Lors d’un import IA, Mass+ réutilise un aliment local correspondant sans écraser la quantité ni les valeurs estimées pour le repas. Un aliment inconnu reste temporaire tant que l’utilisateur ne choisit pas explicitement de l’ajouter à sa banque personnelle.
 
@@ -44,16 +44,16 @@ Le parcours est volontaire et contrôlé par l’utilisateur :
 
 1. enregistrer une photo localement ;
 2. toucher **Partager à mon IA** ;
-3. choisir entre partager la photo, copier le prompt, ouvrir ChatGPT, ouvrir Gemini ou coller une réponse ;
+3. choisir entre partager vers une IA, copier ou afficher le prompt, ou importer une réponse JSON ;
 4. joindre volontairement la photo dans l’application IA choisie ;
 5. coller le prompt ;
 6. copier la réponse ;
 7. toucher **Copier** sur l’unique bloc JSON, revenir dans Mass+ puis toucher **Coller le résultat IA** ;
 8. vérifier et corriger chaque valeur avant l’ajout au journal.
 
-Tous les prompts alimentaires partagent la même consigne stricte : un unique bloc commençant par ` ```json ` et se terminant par ` ``` `, sans texte avant ou après. La photo n’est transmise qu’à l’application explicitement choisie. iOS peut ne pas proposer ChatGPT ou Gemini dans la feuille de partage : ce n’est pas un bug de Mass+, il faut alors ouvrir l’app ou le site manuellement.
+Tous les prompts alimentaires partagent la même consigne stricte : un unique bloc commençant par ` ```json ` et se terminant par ` ``` `, sans texte avant ou après. Le prompt interdit d’inventer huile, beurre, sauce, sucre ou ingrédients cachés. La photo n’est transmise qu’à l’application explicitement choisie. iOS ou Android peuvent ne pas proposer l’IA souhaitée dans la feuille de partage : il faut alors copier le prompt et ouvrir l’application manuellement.
 
-L’importeur retire les balises Markdown, isole l’objet, valide le nom du repas, les aliments, les nombres et les totaux, tout en conservant les anciens alias français/anglais. Si le presse-papiers est refusé, la zone de collage manuel reste disponible. Le contenu est traité avec `JSON.parse` : aucun code n’est exécuté. Les totaux affichés sont recalculés depuis les aliments.
+L’importeur retire les balises Markdown, isole l’objet, valide le nom du repas, les aliments et les nombres, puis calcule les totaux absents. Les anciens formats français/anglais avec `totals`, `carbohydrates` ou quantités textuelles restent acceptés. Si le presse-papiers est refusé, la zone de collage manuel reste disponible. Le contenu est traité avec `JSON.parse` : aucun code n’est exécuté.
 
 ## Limites connues
 
@@ -66,6 +66,7 @@ L’importeur retire les balises Markdown, isole l’objet, valide le nom du rep
 
 ```bash
 npm start
+npm run build:foods
 npm run check
 npm test
 ```

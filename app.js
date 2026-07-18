@@ -1,7 +1,7 @@
 "use strict";
 
 const Core = window.MassPlusCore;
-const APP_VERSION = "1.3.0";
+const APP_VERSION = "1.4.0";
 const STORAGE_KEY = "mass-plus-state-v2";
 const LEGACY_KEYS = ["mass-plus-mvp-v1", "mass-plus-state"];
 const DB_NAME = "mass-plus-local";
@@ -9,6 +9,7 @@ const DB_VERSION = 1;
 const BACKUP_FORMAT = "mass-plus-backup";
 const BACKUP_VERSION = 1;
 const MAX_BACKUP_SIZE = 8_000_000;
+const PRE_RESTORE_BACKUP_KEY = "mass-plus-pre-restore-backup-v1";
 const PHOTO_DB = "mass-plus-photos";
 const PHOTO_STORE = "photos";
 const MEALS = ["petit déjeuner", "déjeuner", "collation", "dîner", "autre"];
@@ -32,7 +33,7 @@ const PROTEIN_FACTORS = { faible: 1.2, "légère": 1.4, "modérée": 1.6, "élev
 const EXCLUSION_OPTIONS = ["lactose", "gluten", "œufs", "arachides", "fruits à coque", "soja", "poisson", "végétarien", "aucune"];
 const QUICK_SNACK_IDS = ["skyr", "banane", "amandes", "lait-entier", "pain", "beurre-cacahuete", "fromage", "compote", "oeufs", "avocat"];
 const OFF_FIELDS = "code,product_name,product_name_fr,generic_name,brands,quantity,serving_size,nutriments,image_front_small_url,countries_tags";
-const PHOTO_ANALYSIS_DISCLAIMER = "Vérifiez toujours les aliments, quantités et valeurs nutritionnelles avant l’ajout au journal.";
+const PHOTO_ANALYSIS_DISCLAIMER = "Analyse estimée par une IA. Vérifiez les aliments et les quantités avant d’enregistrer.";
 const AI_JSON_FORMAT_INSTRUCTIONS = `Réponds uniquement avec un unique objet JSON valide, sans aucun texte explicatif.
 
 IMPORTANT POUR LA COPIE :
@@ -56,20 +57,17 @@ Le résultat attendu doit respecter exactement cette structure :
   "foods": [
     {
       "name": "Nom de l’aliment",
-      "quantity": "Quantité estimée",
+      "quantity": 100,
+      "unit": "g",
       "calories": 0,
       "protein": 0,
-      "carbohydrates": 0,
-      "fat": 0
+      "carbs": 0,
+      "fat": 0,
+      "confidence": "medium",
+      "uncertainty": "Quantité difficile à évaluer"
     }
   ],
-  "totals": {
-    "calories": 0,
-    "protein": 0,
-    "carbohydrates": 0,
-    "fat": 0
-  },
-  "uncertainties": []
+  "generalWarning": "Estimation visuelle à vérifier avant enregistrement"
 }
 \`\`\``;
 
@@ -77,9 +75,11 @@ const MASS_PLUS_AI_PROMPT = `Analyse cette photo alimentaire pour l’applicatio
 
 Identifie uniquement les aliments réellement visibles.
 N’invente aucun ingrédient invisible.
+Ne suppose jamais automatiquement la présence d’huile, de beurre, de sauce ou de sucre.
+Distingue les aliments lorsqu’ils sont visuellement séparables.
 
 Pour chaque aliment, estime :
-- son nom en français ;
+- son nom en français simple ;
 - sa quantité en grammes, millilitres ou unités ;
 - ses calories ;
 - ses protéines en grammes ;
@@ -87,12 +87,14 @@ Pour chaque aliment, estime :
 - ses lipides en grammes.
 
 Donne une ligne distincte pour chaque aliment visible.
+Estime les quantités avec prudence et sans précision excessive.
+Ajoute un niveau de confiance high, medium ou low et explique brièvement toute incertitude.
+Utilise low si la photo est floue, partiellement cachée, sans échelle, ou si les aliments sont mélangés.
 
 ${AI_JSON_FORMAT_INSTRUCTIONS}
 
-Si la photo est ambiguë, indique-le uniquement dans « uncertainties ».
-
-Ne renvoie jamais systématiquement les mêmes aliments.`;
+Ne renvoie jamais systématiquement les mêmes aliments.
+Rappelle dans generalWarning que l’utilisateur doit vérifier et modifier les quantités avant l’enregistrement définitif.`;
 function buildVoiceAiPrompt(transcript) {
   return `Convertis la description de repas ci-dessous pour l'application Mass+.
 
@@ -112,8 +114,7 @@ Pour chaque aliment ou boisson, estime :
 - les glucides en grammes ;
 - les lipides en grammes.
 
-Si une quantité est imprécise, fais une estimation raisonnable et prudente, puis signale-la dans "uncertainties".
-Donne également le total du repas.
+Si une quantité est imprécise, fais une estimation raisonnable et prudente, puis signale-la dans "uncertainty".
 
 ${AI_JSON_FORMAT_INSTRUCTIONS}
 
@@ -130,7 +131,7 @@ const SEARCH_ALIASES = {
   "beurre demi-sel": ["beurre demi-sel"],
   baguette: ["baguette courante", "pain baguette"],
   lait: ["lait entier", "lait demi ecreme", "lait demi-écrémé"],
-  cafe: ["café noir", "café filtre", "café expresso"],
+  cafe: ["café noir", "café filtre", "café expresso", "café"],
   "tasse cafe": ["café noir", "café filtre"],
   "tasse de cafe": ["café noir", "café filtre"],
   "cafe noir": ["café noir", "café filtre"],
@@ -153,8 +154,14 @@ const SEARCH_ALIASES = {
   "haricot rouge": ["haricots rouges"],
   "haricots rouge": ["haricots rouges"],
   "haricot blanc": ["haricots blancs"],
-  cafe: ["café noir", "café filtre", "café expresso", "café"],
-  "cafe sans sucre": ["café", "café sans sucre"]
+  "cafe sans sucre": ["café", "café sans sucre"],
+  "cafe lait": ["café au lait", "café avec lait", "latte"],
+  "pain chocolat": ["pain au chocolat", "petit pain au chocolat", "chocolatine"],
+  "petit pain chocolat": ["petit pain au chocolat", "pain au chocolat"],
+  chocolatine: ["pain au chocolat", "petit pain au chocolat"],
+  yahourt: ["yaourt"],
+  "steak 5": ["steak haché 5 %", "steak haché 5"],
+  "steak hache 5": ["steak haché 5 %"]
 };
 
 let baseFoods = [];
@@ -180,6 +187,7 @@ let savedMealEditDraft = null;
 let pendingBackupRestore = null;
 let recipeFilter = "all";
 let weightRange = "30";
+let foodSearchIndex = new Map();
 let state = emptyState();
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -209,6 +217,12 @@ const id = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const fmt = (value, digits = 0) => new Intl.NumberFormat("fr-FR", { maximumFractionDigits: digits }).format(Number(value || 0));
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#039;" })[char]);
 const roundTo = (value, step) => Math.round(Number(value || 0) / step) * step;
+const parseUserNumber = (value) => {
+  const normalized = typeof value === "string" ? value.trim().replace(",", ".") : value;
+  if (normalized === "") return NaN;
+  const number = Number(normalized);
+  return Number.isFinite(number) ? number : NaN;
+};
 
 function normalizeSearchText(text) {
   return String(text ?? "")
@@ -301,6 +315,10 @@ function emptyState() {
     recipePhotos: {},
     dailyTip: null,
     hiddenTips: {},
+    backupReminder: {
+      lastExportAt: "",
+      dismissedAt: ""
+    },
     photos: [],
     pendingPhotoMeal: "déjeuner",
     untrackedDays: [],
@@ -415,6 +433,7 @@ async function persistStateSnapshot(source) {
       recipePhotos: snapshot.recipePhotos || {},
       dailyTip: snapshot.dailyTip || null,
       hiddenTips: snapshot.hiddenTips || {},
+      backupReminder: snapshot.backupReminder || emptyState().backupReminder,
       pendingPhotoMeal: snapshot.pendingPhotoMeal || "déjeuner",
       untrackedDays: snapshot.untrackedDays || [],
       engagement: snapshot.engagement || emptyState().engagement,
@@ -469,6 +488,8 @@ function normalizeEntry(entry) {
     photoId: entry.photoId || "",
     photoMealId: entry.photoMealId || "",
     analysisId: entry.analysisId || "",
+    importFingerprint: entry.importFingerprint || "",
+    importedAt: entry.importedAt || "",
     confidence: Number(entry.confidence || 0) || 0,
     analysisDemo: Boolean(entry.analysisDemo),
     createdAt,
@@ -534,6 +555,7 @@ async function loadPersistentState() {
   next.recipePhotos = settingsRecord?.recipePhotos || {};
   next.dailyTip = settingsRecord?.dailyTip || null;
   next.hiddenTips = settingsRecord?.hiddenTips || {};
+  next.backupReminder = { ...next.backupReminder, ...(settingsRecord?.backupReminder || {}) };
   next.photos = photos;
   next.pendingPhotoMeal = settingsRecord?.pendingPhotoMeal || "déjeuner";
   next.untrackedDays = Array.isArray(settingsRecord?.untrackedDays) ? [...new Set(settingsRecord.untrackedDays.filter(isDateKey))] : [];
@@ -601,6 +623,10 @@ function migrateState(saved, options = {}) {
   next.recipePhotos = saved.recipePhotos && typeof saved.recipePhotos === "object" ? saved.recipePhotos : {};
   next.dailyTip = saved.dailyTip || null;
   next.hiddenTips = saved.hiddenTips && typeof saved.hiddenTips === "object" ? saved.hiddenTips : {};
+  next.backupReminder = {
+    ...next.backupReminder,
+    ...(saved.backupReminder && typeof saved.backupReminder === "object" ? saved.backupReminder : {})
+  };
   next.photos = Array.isArray(saved.photos) ? saved.photos : [];
   next.pendingPhotoMeal = saved.pendingPhotoMeal || "déjeuner";
   next.untrackedDays = Array.isArray(saved.untrackedDays) ? [...new Set(saved.untrackedDays.filter(isDateKey))] : [];
@@ -732,13 +758,14 @@ function activeGoals() {
   return auto;
 }
 
-function calc(item, grams) {
-  const factor = Number(grams || 0) / 100;
+function calc(item, quantity) {
+  const reference = Math.max(0.0001, Number(item.referenceQuantity || 100));
+  const factor = Number(quantity || 0) / reference;
   return {
-    kcal: Math.round(Number(item.kcalPer100g || 0) * factor),
-    protein: +(Number(item.proteinPer100g || 0) * factor).toFixed(1),
-    carbs: +(Number(item.carbsPer100g || 0) * factor).toFixed(1),
-    fat: +(Number(item.fatPer100g || 0) * factor).toFixed(1)
+    kcal: Math.round(Number(item.calories ?? item.kcalPer100g ?? 0) * factor),
+    protein: +(Number(item.protein ?? item.proteinPer100g ?? 0) * factor).toFixed(1),
+    carbs: +(Number(item.carbohydrates ?? item.carbsPer100g ?? item.carbs ?? 0) * factor).toFixed(1),
+    fat: +(Number(item.fat ?? item.fatPer100g ?? 0) * factor).toFixed(1)
   };
 }
 
@@ -748,6 +775,31 @@ function defaultPortion(food) {
 
 function unitLabel(foodOrEntry) {
   return foodOrEntry?.unit || (normalizeSearch(foodOrEntry?.category).includes("boisson") ? "ml" : "g");
+}
+
+function nutritionReference(food) {
+  return {
+    quantity: Number(food?.referenceQuantity || 100),
+    unit: food?.referenceUnit || unitLabel(food)
+  };
+}
+
+function quantityStep(foodOrEntry) {
+  const unit = normalizeSearchText(unitLabel(foodOrEntry));
+  if (unit.includes("portion")) return 0.5;
+  if (["unite", "piece", "tranche", "part", "tasse", "bol", "verre", "cuillere"].some((label) => unit.includes(label))) return 1;
+  return 10;
+}
+
+function checkedQuantity(value, unit = "g", askConfirmation = true) {
+  const quantity = parseUserNumber(value);
+  if (!Number.isFinite(quantity) || quantity <= 0) return NaN;
+  const normalizedUnit = normalizeSearchText(unit);
+  const countable = !["g", "ml", "cl", "kg", "l"].includes(normalizedUnit);
+  const highLimit = countable ? 50 : 5000;
+  if (askConfirmation && quantity > highLimit && typeof confirm === "function"
+    && !confirm(`Cette quantité semble élevée (${fmt(quantity, 1)} ${unit}). Voulez-vous la conserver ?`)) return NaN;
+  return quantity;
 }
 
 function totals(entries = dayEntries()) {
@@ -1002,26 +1054,38 @@ function searchLocalFoods(query) {
   const favorites = new Set(state.favoriteFoodIds || []);
   return bankFoods()
     .map((food) => {
-      const normalizedName = normalizeSearchText(food.name);
-      const aliases = (food.aliases || []).map(normalizeSearchText);
-      const keywords = (food.keywords || []).map(normalizeSearchText);
-      const haystack = normalizeSearchText([food.name, aliases.join(" "), keywords.join(" "), food.category, food.brands].join(" "));
-      const words = [...new Set(haystack.split(" ").filter(Boolean).flatMap((word) => word.endsWith("s") && word.length > 3 ? [word, word.slice(0, -1)] : [word]))];
+      const { normalizedName, aliases, haystack, words } = foodSearchMetadata(food);
       const exact = queries.some((q) => haystack === q || normalizedName === q || aliases.some((alias) => alias === q));
       const partial = queries.some((q) => q && haystack.includes(q));
       const starts = primary && (normalizedName.startsWith(primary) || aliases.some((alias) => alias.startsWith(primary))) ? 1 : 0;
       const tokenHits = tokens.filter((part) => fuzzyTokenHit(part, words)).length;
+      const aliasHit = queries.some((q) => aliases.some((alias) => alias.includes(q))) ? 1 : 0;
       const score = exact ? 260 : starts ? 210 : partial ? 160 : tokenHits * 34;
-      return { ...food, score, exact, starts, favorite: favorites.has(food.id), usage: foodUsageCount(food, usage) };
+      return { ...food, score, exact, starts, aliasHit, favorite: favorites.has(food.id), usage: foodUsageCount(food, usage) };
     })
     .filter((food) => food.score > 0)
     .sort((a, b) => Number(b.exact) - Number(a.exact)
-      || Number(b.favorite) - Number(a.favorite)
       || b.usage - a.usage
+      || Number(b.favorite) - Number(a.favorite)
       || Number(b.starts) - Number(a.starts)
+      || Number(b.aliasHit) - Number(a.aliasHit)
       || b.score - a.score
       || a.name.localeCompare(b.name, "fr"))
     .slice(0, 20);
+}
+
+function foodSearchMetadata(food) {
+  const cacheKey = `${food.id}:${food.name}:${(food.aliases || []).length}:${(food.keywords || []).length}`;
+  const cached = foodSearchIndex.get(cacheKey);
+  if (cached) return cached;
+  const normalizedName = normalizeSearchText(food.name);
+  const aliases = (food.aliases || []).map(normalizeSearchText);
+  const keywords = (food.keywords || []).map(normalizeSearchText);
+  const haystack = normalizeSearchText([food.name, aliases.join(" "), keywords.join(" "), food.category, food.brands].join(" "));
+  const words = [...new Set(haystack.split(" ").filter(Boolean).flatMap((word) => word.endsWith("s") && word.length > 3 ? [word, word.slice(0, -1)] : [word]))];
+  const indexed = { normalizedName, aliases, haystack, words };
+  foodSearchIndex.set(cacheKey, indexed);
+  return indexed;
 }
 
 function foodUsageCounts() {
@@ -1126,6 +1190,7 @@ async function loadData() {
   baseFoods = foodsRes.ok ? (await foodsRes.json()).map(normalizeFoodRecord) : [];
   recipes = recipesRes.ok ? await recipesRes.json() : [];
   tips = tipsRes.ok ? await tipsRes.json() : [];
+  foodSearchIndex.clear();
 }
 
 function normalizeFoodRecord(food) {
@@ -1752,12 +1817,13 @@ async function lookupBarcode(rawCode) {
 }
 
 function barcodeConfirmationMarkup(food) {
+  const reference = nutritionReference(food);
   return `<div class="scanner-product">
     ${food.image ? `<img class="food-thumb" src="${esc(food.image)}" alt="">` : ""}
     <div>
       <strong>${esc(food.name)}</strong>
       <div class="macro">${esc(food.brands || "Open Food Facts")}</div>
-      <div class="macro">${food.incompleteNutrition ? "Informations nutritionnelles incomplètes" : `${fmt(food.kcalPer100g)} kcal / 100 g · ${fmt(food.proteinPer100g, 1)} g prot.`}</div>
+      <div class="macro">${food.incompleteNutrition ? "Informations nutritionnelles incomplètes" : `${fmt(food.calories ?? food.kcalPer100g)} kcal / ${fmt(reference.quantity, 1)} ${esc(reference.unit)} · ${fmt(food.protein ?? food.proteinPer100g, 1)} g prot.`}</div>
     </div>
     <label>Repas<select id="scanMeal">${MEALS.map((meal) => `<option ${meal === selectedMeal ? "selected" : ""}>${esc(meal)}</option>`).join("")}</select></label>
     <label class="unit-field"><input id="scanGrams" inputmode="numeric" value="${esc(defaultPortion(food))}"><span>g</span></label>
@@ -1772,7 +1838,8 @@ function bindBarcodeConfirmation(food) {
     button.disabled = true;
     selectedDate = selectedDate || today();
     selectedMeal = $("#scanMeal").value;
-    const grams = Number($("#scanGrams").value || defaultPortion(food));
+    const grams = checkedQuantity($("#scanGrams").value || defaultPortion(food), unitLabel(food));
+    if (!Number.isFinite(grams)) { button.disabled = false; return; }
     addEntry(food, grams, selectedMeal, false);
     closeBarcodeScanner();
     toast("Produit ajouté après confirmation.");
@@ -1800,7 +1867,7 @@ function calorieRing(value, goal) {
 function calorieRemainingMessage(value, goal) {
   if (!goal) return "Complète le profil pour calculer l’objectif.";
   const remaining = Math.max(0, Number(goal) - Number(value || 0));
-  return remaining > 0 ? `Il reste environ ${fmt(remaining)} kcal aujourd’hui.` : "Objectif calorique atteint aujourd’hui.";
+  return remaining > 0 ? `Il reste environ ${fmt(remaining)} kcal aujourd’hui.` : "Objectif atteint aujourd’hui. Bien joué.";
 }
 
 function tipForDate(dateKey = today()) {
@@ -1834,7 +1901,7 @@ function contextualTip(dateKey = today()) {
   if (!entries.length) return { title: "Journal du jour", body: "Rien n’est encore enregistré aujourd’hui." };
   const sum = totals(entries);
   const goals = activeGoals();
-  if (goals.calories && sum.kcal >= goals.calories) return { title: "Objectif calorique atteint", body: "La régularité compte plus que la perfection." };
+  if (goals.calories && sum.kcal >= goals.calories) return { title: "Objectif atteint aujourd’hui", body: "Bien joué. La régularité compte plus que la perfection." };
   if (new Date().getHours() >= 17 && goals.calories && sum.kcal < goals.calories * 0.6) {
     return { title: "Une collation dense peut aider", body: "Skyr, banane, pain avec beurre de cacahuète ou poignée de noix sont des options simples." };
   }
@@ -1958,6 +2025,28 @@ function bindHomeEngagement() {
       }
     }
   }));
+  $("#exportReminderBackup")?.addEventListener("click", exportUserData);
+  $("#dismissBackupReminder")?.addEventListener("click", () => {
+    state.backupReminder = { ...emptyState().backupReminder, ...state.backupReminder, dismissedAt: new Date().toISOString() };
+    saveState();
+    $("#backupReminderCard")?.remove();
+  });
+}
+
+function backupReminderMarkup() {
+  const journalDays = new Set(state.entries.map((entry) => entry.date)).size;
+  if (journalDays < 7 && state.entries.length < 20) return "";
+  const reminder = { ...emptyState().backupReminder, ...state.backupReminder };
+  const recentEnough = (value, days) => {
+    const timestamp = new Date(value || 0).getTime();
+    return Number.isFinite(timestamp) && timestamp > 0 && Date.now() - timestamp < days * 86_400_000;
+  };
+  if (recentEnough(reminder.lastExportAt, 30) || recentEnough(reminder.dismissedAt, 14)) return "";
+  return `<article class="card backup-reminder" id="backupReminderCard">
+    <div class="section-head"><div><p class="eyebrow">Sauvegarde locale</p><h2>Conserver une copie de vos données</h2></div><button class="ghost-inline" id="dismissBackupReminder" type="button">Plus tard</button></div>
+    <p class="small">Une sauvegarde JSON est utile avant un changement de téléphone, de navigateur ou l’effacement des données du site.</p>
+    <button class="secondary-button wide" id="exportReminderBackup" type="button">Créer ma sauvegarde</button>
+  </article>`;
 }
 
 function renderHome() {
@@ -1985,6 +2074,7 @@ function renderHome() {
     <article class="card privacy-note">
       <p>Vos données alimentaires et photos restent stockées localement sur cet appareil, sauf lorsque vous choisissez volontairement de partager une photo vers une autre application.</p>
     </article>
+    ${backupReminderMarkup()}
     ${dailyTipCard()}
     <div class="grid two">
       ${metric("Poids actuel", latestWeight() ? `${fmt(latestWeight(), 1)} kg` : "Profil à compléter")}
@@ -2379,7 +2469,7 @@ function bindFoodRows(scope, foods, onAdd) {
     button.disabled = true;
     const food = foods.find((item) => item.id === button.dataset.addFood);
     if (!food) { button.disabled = false; return; }
-    const grams = Number($(`[data-grams="${button.dataset.addFood}"][data-scope="${scope}"]`)?.value || defaultPortion(food));
+    const grams = checkedQuantity($(`[data-grams="${button.dataset.addFood}"][data-scope="${scope}"]`)?.value || defaultPortion(food), unitLabel(food));
     if (!Number.isFinite(grams) || grams <= 0) { button.disabled = false; return; }
     if (food.source === "Open Food Facts" && !state.offFoods.some((item) => item.id === food.id)) state.offFoods.push(food);
     onAdd(food, grams);
@@ -2432,16 +2522,18 @@ async function doOffSearch(scope, query, renderResults, status) {
 function foodRow(food, scope) {
   const source = food.source || "Base Mass+";
   const portion = defaultPortion(food);
+  const reference = nutritionReference(food);
+  const step = quantityStep(food);
   const favorite = (state.favoriteFoodIds || []).includes(food.id);
   return `<div class="food-row">
     ${food.image ? `<img class="food-thumb" src="${esc(food.image)}" alt="">` : ""}
     <div>
       <div class="food-title-row"><strong>${esc(food.name)}</strong><button class="food-favorite-toggle ${favorite ? "active" : ""}" data-food-favorite="${esc(food.id)}" data-scope="${scope}" type="button" aria-label="${favorite ? "Retirer des favoris" : "Ajouter aux favoris"}" aria-pressed="${favorite}">${favorite ? "★" : "☆"}</button></div>
       <div class="macro">${esc(source)}${food.brands ? ` · ${esc(food.brands)}` : ""}</div>
-      <div class="macro">${food.incompleteNutrition ? "Informations nutritionnelles incomplètes" : `${fmt(food.kcalPer100g)} kcal / 100 ${esc(unitLabel(food))} · ${fmt(food.proteinPer100g, 1)} g prot. · portion ${fmt(portion)} ${esc(unitLabel(food))}`}</div>
+      <div class="macro">${food.incompleteNutrition ? "Informations nutritionnelles incomplètes" : `${fmt(food.calories ?? food.kcalPer100g)} kcal / ${fmt(reference.quantity, 1)} ${esc(reference.unit)} · ${fmt(food.protein ?? food.proteinPer100g, 1)} g prot. · portion ${fmt(portion, step < 1 ? 1 : 0)} ${esc(unitLabel(food))}`}</div>
     </div>
     <div class="food-actions">
-      <div class="quantity-stepper"><button type="button" data-adjust-food="${esc(food.id)}" data-scope="${scope}" data-delta="-10" aria-label="Diminuer de 10 ${esc(unitLabel(food))}">−</button><label class="unit-field"><input inputmode="decimal" value="${portion}" data-grams="${food.id}" data-scope="${scope}" aria-label="Quantité"><span>${esc(unitLabel(food))}</span></label><button type="button" data-adjust-food="${esc(food.id)}" data-scope="${scope}" data-delta="10" aria-label="Augmenter de 10 ${esc(unitLabel(food))}">+</button></div>
+      <div class="quantity-stepper"><button type="button" data-adjust-food="${esc(food.id)}" data-scope="${scope}" data-delta="-${step}" aria-label="Diminuer de ${fmt(step, step < 1 ? 1 : 0)} ${esc(unitLabel(food))}">−</button><label class="unit-field"><input inputmode="decimal" value="${portion}" data-grams="${food.id}" data-scope="${scope}" aria-label="Quantité"><span>${esc(unitLabel(food))}</span></label><button type="button" data-adjust-food="${esc(food.id)}" data-scope="${scope}" data-delta="${step}" aria-label="Augmenter de ${fmt(step, step < 1 ? 1 : 0)} ${esc(unitLabel(food))}">+</button></div>
       <button class="primary-button compact" data-add-food="${food.id}" data-scope="${scope}">Ajouter</button>
     </div>
   </div>`;
@@ -2449,22 +2541,20 @@ function foodRow(food, scope) {
 
 function adjustQuantityInput(input, delta) {
   if (!input) return;
-  const next = Math.max(1, Math.round((Number(input.value || 0) + Number(delta || 0)) * 10) / 10);
+  const current = parseUserNumber(input.value);
+  const next = Math.max(0.1, Math.round(((Number.isFinite(current) ? current : 0) + Number(delta || 0)) * 10) / 10);
   input.value = String(next);
 }
 
 function entryQuantityStep(entry) {
-  const unit = normalizeSearchText(entry?.unit || "g");
-  if (unit.includes("portion")) return 0.5;
-  if (["unite", "piece", "tranche", "tasse"].some((label) => unit.includes(label))) return 1;
-  return 10;
+  return quantityStep(entry);
 }
 
 function bindManualFoodForm() {
   $("#manualFoodForm")?.addEventListener("submit", (event) => {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(event.currentTarget));
-    const quantity = Number(data.quantity || 100);
+    const quantity = checkedQuantity(data.quantity || 100, data.unit || "g");
     const name = data.name.trim();
     if (!name || !Number.isFinite(quantity) || quantity <= 0) {
       toast("Vérifiez le nom et la quantité.");
@@ -2516,6 +2606,8 @@ function addEntry(food, grams, meal, rerender = true, extras = {}) {
     photoId: extras.photoId || "",
     photoMealId: extras.photoMealId || "",
     analysisId: extras.analysisId || "",
+    importFingerprint: extras.importFingerprint || "",
+    importedAt: extras.importedAt || "",
     confidence: Number(extras.confidence || 0) || 0,
     analysisDemo: Boolean(extras.analysisDemo),
     createdAt: now,
@@ -2566,7 +2658,7 @@ function bindEntryButtons() {
   }));
   $$("[data-edit-entry]").forEach((button) => button.addEventListener("click", () => {
     const entry = state.entries.find((item) => item.id === button.dataset.editEntry);
-    const next = Number($(`[data-entry-grams="${entry.id}"]`)?.value || entry.grams);
+    const next = checkedQuantity($(`[data-entry-grams="${entry.id}"]`)?.value || entry.grams, entry.unit || "g");
     const food = findFood(entry.foodId);
     if (!entry || !food || !Number.isFinite(next) || next <= 0) return;
     Object.assign(entry, { quantity: next, grams: next, updatedAt: new Date().toISOString(), ...calc(food, next) });
@@ -2623,10 +2715,11 @@ function favoriteEditor(favorite) {
 function favoriteItemRow(favorite, item, index) {
   const food = findFood(item.food);
   const macros = food ? calc(food, item.grams) : item;
+  const unit = unitLabel(food || item);
   return `<div class="entry-row mini">
     <div><strong>${esc(item.name || food?.name || "Aliment")}</strong><div class="macro">${fmt(macros.kcal)} kcal · ${fmt(macros.protein, 1)} g prot.</div></div>
     <div class="entry-actions">
-      <label class="unit-field"><input value="${esc(item.grams)}" inputmode="numeric" data-fav-grams="${favorite.id}" data-index="${index}"><span>g</span></label>
+      <label class="unit-field"><input value="${esc(item.grams)}" inputmode="decimal" data-fav-grams="${favorite.id}" data-index="${index}"><span>${esc(unit)}</span></label>
       <button class="secondary-button compact" data-fav-update="${favorite.id}" data-index="${index}">OK</button>
       <button class="danger-button compact" data-fav-remove="${favorite.id}" data-index="${index}">Suppr.</button>
     </div>
@@ -2670,8 +2763,8 @@ function updateFavoriteItem(favoriteId, index) {
   const favorite = state.favorites.find((item) => item.id === favoriteId);
   const item = favorite?.items[index];
   const food = findFood(item?.food);
-  const grams = Number($(`[data-fav-grams="${favoriteId}"][data-index="${index}"]`)?.value || item?.grams);
-  if (!favorite || !item || !food || !grams) return;
+  const grams = checkedQuantity($(`[data-fav-grams="${favoriteId}"][data-index="${index}"]`)?.value || item?.grams, unitLabel(food || item));
+  if (!favorite || !item || !food || !Number.isFinite(grams)) return;
   favorite.items[index] = { ...item, grams, ...calc(food, grams) };
   saveState();
   renderAfterSavedMealChange();
@@ -2822,9 +2915,10 @@ function renderSavedMealEditor() {
 function savedMealEditItemRow(item, index) {
   const food = findFood(item.food);
   const macros = food ? calc(food, item.grams) : item;
+  const unit = unitLabel(food || item);
   return `<div class="saved-meal-edit-row">
     <div><strong>${esc(item.name || food?.name || "Aliment")}</strong><div class="macro">${fmt(macros.kcal)} kcal · ${fmt(macros.protein, 1)} g prot.</div></div>
-    <label class="unit-field"><input value="${esc(item.grams)}" inputmode="decimal" data-saved-edit-grams="${index}" aria-label="Quantité ${esc(item.name || food?.name || "aliment")}"><span>g</span></label>
+    <label class="unit-field"><input value="${esc(item.grams)}" inputmode="decimal" data-saved-edit-grams="${index}" aria-label="Quantité ${esc(item.name || food?.name || "aliment")}"><span>${esc(unit)}</span></label>
     <button class="danger-button compact" data-remove-saved-meal-item="${index}" type="button">Supprimer</button>
   </div>`;
 }
@@ -2837,7 +2931,8 @@ function syncSavedMealEditDraft() {
     savedMealEditDraft.meal = form.elements.meal.value;
   }
   savedMealEditDraft.items = savedMealEditDraft.items.map((item, index) => {
-    const grams = Number($(`[data-saved-edit-grams="${index}"]`)?.value || item.grams);
+    const food = findFood(item.food);
+    const grams = checkedQuantity($(`[data-saved-edit-grams="${index}"]`)?.value || item.grams, unitLabel(food || item), false);
     return Number.isFinite(grams) && grams > 0 ? scaleSavedMealItem(item, grams) : item;
   });
 }
@@ -2878,7 +2973,7 @@ function closeSavedMealModal() {
 }
 
 function saveWeightMeasurement({ entryId = "", date = today(), weightKg, targetWeight = 0, desiredPace = "" }) {
-  const value = Number(weightKg);
+  const value = parseUserNumber(weightKg);
   if (!Number.isFinite(value) || value < 20 || value > 400) return false;
   const existing = state.weights.find((item) => item.id === entryId) || state.weights.find((item) => item.date === date);
   const now = new Date().toISOString();
@@ -2889,7 +2984,8 @@ function saveWeightMeasurement({ entryId = "", date = today(), weightKg, targetW
   }
   state.weights = Core.sortedWeights(state.weights);
   state.profile.currentWeight = state.weights.at(-1)?.weightKg || value;
-  if (Number(targetWeight) > 0) state.profile.targetWeight = Number(targetWeight);
+  const parsedTarget = parseUserNumber(targetWeight);
+  if (parsedTarget > 0) state.profile.targetWeight = parsedTarget;
   if (desiredPace) state.profile.desiredPace = desiredPace;
   saveState();
   return true;
@@ -3059,6 +3155,7 @@ function renderWeight() {
 
 function renderProfile() {
   const goals = activeGoals();
+  const hasSafetyBackup = Boolean(localStorage.getItem(PRE_RESTORE_BACKUP_KEY));
   $("#screen").innerHTML = `
     <article class="card">
       <h2>Profil</h2>
@@ -3097,7 +3194,9 @@ function renderProfile() {
       <div class="inline-actions">
         <button class="primary-button compact" id="exportData" type="button">Exporter mes données</button>
         <label class="secondary-button compact import-button">Restaurer une sauvegarde<input id="importData" type="file" accept="application/json,.json"></label>
+        ${hasSafetyBackup ? `<button class="secondary-button compact" id="restoreSafetyBackup" type="button">Copie avant remplacement</button>` : ""}
       </div>
+      <p class="small"><strong>Mass+ conserve vos données sur cet appareil.</strong> Faites une sauvegarde JSON avant de changer de téléphone, de navigateur ou d’effacer les données du site.</p>
       <p class="small">Le fichier contient le profil, tout le journal, les poids, aliments personnels, favoris, repas enregistrés et réglages. Les fichiers image restent sur cet appareil et ne sont pas inclus afin de garder une sauvegarde légère.</p>
     </article>
     <p class="small app-version">Mass+ v${APP_VERSION}</p>`;
@@ -3109,7 +3208,17 @@ function renderProfile() {
   bindExclusionForm();
   $("#exportData").addEventListener("click", exportUserData);
   $("#importData").addEventListener("change", importUserData);
+  $("#restoreSafetyBackup")?.addEventListener("click", openSafetyBackupRestore);
   $("#profileWeight").addEventListener("click", () => go("weight"));
+}
+
+function openSafetyBackupRestore() {
+  try {
+    pendingBackupRestore = validateBackupPayload(JSON.parse(localStorage.getItem(PRE_RESTORE_BACKUP_KEY) || ""));
+    openBackupRestorePreview(pendingBackupRestore);
+  } catch {
+    toast("La copie locale de sécurité n’est plus exploitable.");
+  }
 }
 
 function goalFieldsMarkup(goals) {
@@ -3207,6 +3316,7 @@ function backupDataFromState(source = state) {
     recipePhotos: snapshot.recipePhotos || {},
     dailyTip: snapshot.dailyTip || null,
     hiddenTips: snapshot.hiddenTips || {},
+    backupReminder: snapshot.backupReminder || emptyState().backupReminder,
     photos: snapshot.photos || [],
     pendingPhotoMeal: snapshot.pendingPhotoMeal || "déjeuner",
     untrackedDays: snapshot.untrackedDays || [],
@@ -3227,6 +3337,9 @@ function buildBackupPayload(source = state) {
 }
 
 function exportUserData() {
+  const firstExport = !state.backupReminder?.lastExportAt;
+  state.backupReminder = { ...emptyState().backupReminder, ...state.backupReminder, lastExportAt: new Date().toISOString() };
+  saveState();
   const payload = buildBackupPayload();
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
@@ -3237,7 +3350,8 @@ function exportUserData() {
   document.body.appendChild(link);
   link.click();
   setTimeout(() => { link.remove(); URL.revokeObjectURL(url); }, 1200);
-  toast("Sauvegarde créée avec succès.");
+  $("#backupReminderCard")?.remove();
+  toast(firstExport ? "Première sauvegarde créée. Vos données sont prêtes à être conservées." : "Sauvegarde créée avec succès.");
 }
 
 async function importUserData(event) {
@@ -3346,14 +3460,14 @@ function openBackupRestorePreview(backup) {
     <p><strong>Sauvegarde du ${esc(backupDateLabel(backup.createdAt))}</strong></p>
     <p class="small">Cette sauvegarde contient :</p>
     <ul class="backup-summary"><li>${summary.days} journée(s) de journal · ${summary.entries} entrée(s)</li><li>${summary.weights} mesure(s) de poids</li><li>${summary.savedMeals} repas enregistré(s)</li><li>${summary.favoriteRecipes} recette(s) favorite(s)</li><li>${summary.customFoods} aliment(s) personnel(s)</li></ul>
-    <p class="notice analysis-notice">La restauration remplacera les données actuelles de Mass+. Une copie de sécurité sera conservée en mémoire pendant l’opération.</p>
+    <p class="notice analysis-notice">Choisissez de fusionner les éléments sans supprimer vos données actuelles, ou de tout remplacer. Avant un remplacement, Mass+ conserve une copie de sécurité locale lorsque le navigateur le permet.</p>
     <p class="small">Les images ne font pas partie du fichier JSON. Leurs métadonnées sont conservées, mais une image absente de cet appareil ne pourra pas être affichée.</p>
-    <div class="modal-actions"><button class="primary-button" id="confirmBackupRestore" type="button">Restaurer cette sauvegarde</button><button class="secondary-button" data-close-backup type="button">Annuler</button></div>
+    <div class="modal-actions"><button class="primary-button" data-confirm-backup="merge" type="button">Fusionner avec mes données</button><button class="secondary-button" data-confirm-backup="replace" type="button">Remplacer mes données</button><button class="secondary-button" data-close-backup type="button">Annuler</button></div>
   </div>`;
   document.body.appendChild(overlay);
   requestAnimationFrame(() => overlay.classList.add("visible"));
   overlay.addEventListener("click", (event) => { if (event.target === overlay || event.target.closest("[data-close-backup]")) closeBackupRestorePreview(); });
-  $("#confirmBackupRestore").addEventListener("click", restorePendingBackup);
+  $$("[data-confirm-backup]", overlay).forEach((button) => button.addEventListener("click", restorePendingBackup));
 }
 
 function closeBackupRestorePreview() {
@@ -3363,11 +3477,24 @@ function closeBackupRestorePreview() {
 async function restorePendingBackup(event) {
   if (!pendingBackupRestore) return;
   const button = event.currentTarget;
+  const mode = button.dataset.confirmBackup === "merge" ? "merge" : "replace";
   button.disabled = true;
   button.textContent = "Restauration…";
   const previousState = cloneState(state);
   const previousLocal = localStorage.getItem(STORAGE_KEY);
-  const restoredState = cloneState(pendingBackupRestore.state);
+  if (mode === "replace") {
+    try {
+      localStorage.setItem(PRE_RESTORE_BACKUP_KEY, JSON.stringify(buildBackupPayload(previousState)));
+    } catch {
+      button.disabled = false;
+      button.textContent = "Remplacer mes données";
+      toast("La copie de sécurité locale n’a pas pu être créée. Le remplacement est annulé.");
+      return;
+    }
+  }
+  const restoredState = mode === "merge"
+    ? mergeRestoredState(previousState, pendingBackupRestore.state)
+    : cloneState(pendingBackupRestore.state);
   restoredState.savedAt = new Date().toISOString();
   restoredState.saveRevision = Number(previousState.saveRevision || 0) + 1;
   try {
@@ -3385,7 +3512,7 @@ async function restorePendingBackup(event) {
     if (previousLocal == null) localStorage.removeItem(STORAGE_KEY);
     else localStorage.setItem(STORAGE_KEY, previousLocal);
     button.disabled = false;
-    button.textContent = "Restaurer cette sauvegarde";
+    button.textContent = mode === "merge" ? "Fusionner avec mes données" : "Remplacer mes données";
     toast("Impossible de restaurer cette sauvegarde. Vos données actuelles n’ont pas été modifiées.");
     return;
   }
@@ -3394,7 +3521,46 @@ async function restorePendingBackup(event) {
   pendingBackupRestore = null;
   closeBackupRestorePreview();
   renderProfile();
-  toast("Sauvegarde restaurée avec succès.");
+  toast(mode === "merge" ? "Sauvegarde fusionnée avec succès, sans suppression silencieuse." : "Sauvegarde restaurée. Une copie de sécurité locale a été conservée.");
+}
+
+function mergeRestoredState(current, incoming) {
+  const merged = migrateState({
+    ...incoming,
+    profile: { ...incoming.profile, ...current.profile },
+    entries: mergeById(incoming.entries, current.entries),
+    weights: mergeById(incoming.weights, current.weights),
+    favorites: mergeById(incoming.favorites, current.favorites),
+    customFoods: mergeById(incoming.customFoods, current.customFoods),
+    offFoods: mergeById(incoming.offFoods, current.offFoods),
+    photos: mergeById(incoming.photos, current.photos),
+    favoriteFoodIds: [...new Set([...(incoming.favoriteFoodIds || []), ...(current.favoriteFoodIds || [])])],
+    recipeFavorites: [...new Set([...(incoming.recipeFavorites || []), ...(current.recipeFavorites || [])])],
+    untrackedDays: [...new Set([...(incoming.untrackedDays || []), ...(current.untrackedDays || [])])],
+    recipePhotos: { ...(incoming.recipePhotos || {}), ...(current.recipePhotos || {}) },
+    hiddenTips: { ...(incoming.hiddenTips || {}), ...(current.hiddenTips || {}) },
+    backupReminder: { ...(incoming.backupReminder || {}), ...(current.backupReminder || {}) },
+    engagement: {
+      ...incoming.engagement,
+      ...current.engagement,
+      completedMissions: mergeEngagementRecords(incoming.engagement?.completedMissions, current.engagement?.completedMissions),
+      eveningReviews: mergeEngagementRecords(incoming.engagement?.eveningReviews, current.engagement?.eveningReviews)
+    }
+  }, { persist: false });
+  merged.entries = dedupeById(merged.entries).map(normalizeEntry);
+  merged.weights = dedupeById(merged.weights.map(weightRecord)).sort((a, b) => a.date.localeCompare(b.date));
+  return merged;
+}
+
+function mergeEngagementRecords(incoming = [], current = []) {
+  const records = new Map();
+  [...incoming, ...current].forEach((item) => {
+    const record = typeof item === "string" ? { date: item } : item;
+    if (!record || typeof record !== "object") return;
+    const key = `${record.date || ""}:${record.title || ""}`;
+    records.set(key, record);
+  });
+  return [...records.values()];
 }
 
 function mergeById(current, incoming) {
@@ -3537,7 +3703,7 @@ function bindSavedMealCards() {
 }
 
 function savedMealPortions(savedMealId) {
-  const value = Number($(`[data-saved-meal-portions="${savedMealId}"]`)?.value || 1);
+  const value = checkedQuantity($(`[data-saved-meal-portions="${savedMealId}"]`)?.value || 1, "portion");
   return Number.isFinite(value) && value > 0 ? value : 1;
 }
 
@@ -3599,7 +3765,7 @@ function bindRecipeButtons() {
 }
 
 function recipePortions(recipeId) {
-  const value = Number($(`[data-recipe-portions="${recipeId}"]`)?.value || 1);
+  const value = checkedQuantity($(`[data-recipe-portions="${recipeId}"]`)?.value || 1, "portion");
   return Number.isFinite(value) && value > 0 ? value : 1;
 }
 
@@ -3865,7 +4031,7 @@ async function renderPhotoList() {
     const stored = await idbGet(meta.id).catch(() => null);
     const url = stored?.blob ? URL.createObjectURL(stored.blob) : "";
     const total = meta.analysisTotals ? `<div class="macro">Confirmé : ${fmt(meta.analysisTotals.kcal)} kcal · ${fmt(meta.analysisTotals.protein, 1)} g prot.</div>` : "";
-    return `<div class="photo-card">${url ? `<img src="${url}" alt="Photo repas">` : ""}<div><strong>${esc(meta.meal)}</strong><div class="macro">${esc(meta.date)}</div>${total}<p class="photo-share-help">Dans ChatGPT, touche Copier sur le bloc JSON, puis reviens dans Mass+.</p><div class="photo-actions"><button class="primary-button" data-photo-share="${esc(meta.id)}" type="button">Partager à mon IA</button><button class="secondary-button compact" data-photo-import="${esc(meta.id)}" type="button">Coller le résultat IA</button><button class="secondary-button compact" data-photo-manual="${esc(meta.id)}" type="button">Saisie manuelle</button><button class="danger-button compact" data-delete-photo="${esc(meta.id)}" type="button">Supprimer</button></div></div></div>`;
+    return `<div class="photo-card">${url ? `<img src="${url}" alt="Photo repas">` : ""}<div><strong>${esc(meta.meal)}</strong><div class="macro">${esc(meta.date)}</div>${total}<p class="photo-share-help">Après l’analyse, copiez le bloc JSON puis revenez dans Mass+.</p><div class="photo-actions"><button class="primary-button" data-photo-share="${esc(meta.id)}" type="button">Partager vers une IA</button><button class="secondary-button compact" data-photo-import="${esc(meta.id)}" type="button">Importer la réponse JSON</button><button class="secondary-button compact" data-photo-manual="${esc(meta.id)}" type="button">Saisie manuelle</button><button class="danger-button compact" data-delete-photo="${esc(meta.id)}" type="button">Supprimer</button></div></div></div>`;
   }));
   node.innerHTML = cards.join("");
   $$('[data-photo-share]').forEach((button) => button.addEventListener("click", () => sharePhotoWithAi(button.dataset.photoShare)));
@@ -3899,16 +4065,15 @@ function openAiShareModal(photoId) {
   overlay.className = "ai-import-overlay";
   overlay.innerHTML = `<div class="ai-import-modal" role="dialog" aria-modal="true" aria-labelledby="aiShareTitle">
     <div class="section-head"><h2 id="aiShareTitle">Analyser avec votre IA</h2><button class="sheet-close" type="button" aria-label="Fermer" data-close-ai-share>×</button></div>
-    <p class="small">Mass+ ne transmet rien automatiquement à un serveur. Choisissez comment envoyer la photo à ChatGPT, Gemini ou une autre IA.</p>
+    <p class="small">Mass+ ne transmet rien automatiquement à un serveur. Vous choisissez l’application à laquelle partager la photo.</p>
     <div class="modal-actions ai-share-actions">
-      <button class="primary-button" data-ai-share-action="share" type="button">Partager la photo</button>
+      <button class="primary-button" data-ai-share-action="share" type="button">Partager vers une IA</button>
       <button class="secondary-button" data-ai-share-action="copy" type="button">Copier le prompt</button>
-      <button class="secondary-button" data-ai-share-action="chatgpt" type="button">Ouvrir ChatGPT</button>
-      <button class="secondary-button" data-ai-share-action="gemini" type="button">Ouvrir Gemini</button>
-      <button class="secondary-button" data-ai-share-action="import" type="button">Coller le résultat IA</button>
+      <button class="secondary-button" data-ai-share-action="show" type="button">Afficher le prompt</button>
+      <button class="secondary-button" data-ai-share-action="import" type="button">Importer la réponse JSON</button>
       <button class="secondary-button" data-close-ai-share type="button">Annuler</button>
     </div>
-    <p class="import-status" id="aiShareStatus" role="status">Dans ChatGPT, touche Copier sur le bloc JSON, puis reviens dans Mass+.</p>
+    <p class="import-status" id="aiShareStatus" role="status">Après l’analyse, copiez le JSON puis revenez dans Mass+.</p>
   </div>`;
   document.body.appendChild(overlay);
   requestAnimationFrame(() => overlay.classList.add("visible"));
@@ -3929,22 +4094,13 @@ async function handleAiShareAction(action, meta) {
   const status = $("#aiShareStatus");
   if (action === "copy") {
     const copied = await copyAiPrompt();
-    status.textContent = copied ? "Prompt copié. Collez-le dans votre IA avec la photo." : "Copie automatique refusée. Sélectionnez le prompt depuis le panneau de secours.";
+    status.textContent = copied ? "Prompt copié. Ouvrez votre IA, ajoutez la photo puis collez le texte." : "Copie automatique refusée. Affichez le prompt pour le sélectionner.";
     if (!copied) renderShareFallback(meta, false);
     return;
   }
-  if (action === "chatgpt") {
-    if (navigator.onLine === false) { status.textContent = "Connexion nécessaire pour ouvrir ChatGPT."; return; }
-    window.open("https://chatgpt.com/", "_blank", "noopener,noreferrer");
-    status.textContent = "ChatGPT ouvert. Joignez la photo puis collez le prompt copié.";
-    await copyAiPrompt();
-    return;
-  }
-  if (action === "gemini") {
-    if (navigator.onLine === false) { status.textContent = "Connexion nécessaire pour ouvrir Gemini."; return; }
-    window.open("https://gemini.google.com/", "_blank", "noopener,noreferrer");
-    status.textContent = "Gemini ouvert. Joignez la photo puis collez le prompt copié.";
-    await copyAiPrompt();
+  if (action === "show") {
+    closeAiShareModal();
+    renderShareFallback(meta, false, "Prompt à copier");
     return;
   }
   if (action === "import") {
@@ -3985,7 +4141,7 @@ async function sharePhotoNatively(meta) {
   try {
     await navigator.share(shareData);
     const copied = await clipboardPromise;
-    toast(copied ? "Photo partagée. Copiez la réponse de votre IA puis revenez dans Mass+." : "Photo partagée. Le prompt est disponible dans Mass+ si vous devez le copier.");
+    toast(copied ? "Prompt copié. Ouvrez votre IA, ajoutez la photo puis collez le texte." : "Photo partagée. Le prompt reste affichable dans Mass+.");
   } catch (error) {
     await clipboardPromise;
     if (error?.name === "AbortError") {
@@ -4006,15 +4162,15 @@ function canNativeShareFile(file) {
   }
 }
 
-function renderShareFallback(meta, copied) {
+function renderShareFallback(meta, copied, title = "Partage indisponible") {
   const panel = $("#photoAnalysisPanel");
   if (!panel) return;
   panel.innerHTML = `<article class="card analysis-card share-fallback">
-    <div class="section-head"><h2>Partage indisponible</h2><button class="ghost-inline" id="closeShareFallback" type="button">Fermer</button></div>
-    <p class="small">La feuille de partage de ce navigateur ne permet pas d’envoyer la photo. Vous pouvez copier le prompt puis partager la photo depuis l’app Photos.</p>
+    <div class="section-head"><h2>${esc(title)}</h2><button class="ghost-inline" id="closeShareFallback" type="button">Fermer</button></div>
+    <p class="small">Copiez le prompt puis ajoutez vous-même la photo dans l’IA de votre choix. Mass+ ne transmet rien sans votre action.</p>
     <label>Prompt d’analyse<textarea id="sharePromptFallback" readonly></textarea></label>
     <p class="small" id="shareFallbackStatus">${copied ? "Prompt déjà copié." : "Sélectionnez le prompt si la copie automatique est refusée."}</p>
-    <div class="inline-actions"><button class="primary-button" id="copyPromptFallback" type="button">Copier le prompt</button><button class="secondary-button" id="openImportFallback" type="button">Coller le résultat IA</button></div>
+    <div class="inline-actions"><button class="primary-button" id="copyPromptFallback" type="button">Copier le prompt</button><button class="secondary-button" id="openImportFallback" type="button">Importer la réponse JSON</button></div>
   </article>`;
   $("#sharePromptFallback").value = MASS_PLUS_AI_PROMPT;
   $("#closeShareFallback").addEventListener("click", () => { panel.innerHTML = ""; });
@@ -4203,22 +4359,30 @@ function normalizeImportedMeal(raw) {
   if (!foodsRaw.length) throw new Error("La liste d’aliments est vide.");
   const foods = foodsRaw.slice(0, 24).map((food, index) => normalizeImportedFood(food, index));
   const totalsRaw = getKey(raw, ["totals", "total", "totaux"]);
-  if (!totalsRaw || typeof totalsRaw !== "object" || Array.isArray(totalsRaw)) throw new Error("Total du repas introuvable.");
-  const declaredTotals = {
-    kcal: parseNutritionNumber(getKey(totalsRaw, ["calories", "kcal", "energy", "energie", "énergie"]), "calories", "le total"),
-    protein: parseNutritionNumber(getKey(totalsRaw, ["protein", "proteins", "proteines", "protéines"]), "protéines", "le total"),
-    carbs: parseNutritionNumber(getKey(totalsRaw, ["carbohydrates", "carbs", "glucides"]), "glucides", "le total"),
-    fat: parseNutritionNumber(getKey(totalsRaw, ["fat", "fats", "lipid", "lipids", "lipides"]), "lipides", "le total")
-  };
+  const calculatedTotals = foods.reduce((sum, food) => ({
+    kcal: sum.kcal + food.kcal,
+    protein: sum.protein + food.protein,
+    carbs: sum.carbs + food.carbs,
+    fat: sum.fat + food.fat
+  }), { kcal: 0, protein: 0, carbs: 0, fat: 0 });
+  const declaredTotals = totalsRaw && typeof totalsRaw === "object" && !Array.isArray(totalsRaw)
+    ? {
+        kcal: parseNutritionNumber(getKey(totalsRaw, ["calories", "kcal", "energy", "energie", "énergie"]), "calories", "le total"),
+        protein: parseNutritionNumber(getKey(totalsRaw, ["protein", "proteins", "proteines", "protéines"]), "protéines", "le total"),
+        carbs: parseNutritionNumber(getKey(totalsRaw, ["carbohydrates", "carbs", "glucides"]), "glucides", "le total"),
+        fat: parseNutritionNumber(getKey(totalsRaw, ["fat", "fats", "lipid", "lipids", "lipides"]), "lipides", "le total")
+      }
+    : Object.fromEntries(Object.entries(calculatedTotals).map(([key, value]) => [key, +value.toFixed(1)]));
   const uncertaintiesRaw = getKey(raw, ["uncertainties", "incertitudes", "notes", "aConfirmer"]);
   const uncertainties = Array.isArray(uncertaintiesRaw)
     ? uncertaintiesRaw.map((item) => String(item || "").trim()).filter(Boolean).join(" · ")
     : String(uncertaintiesRaw || "").trim();
+  const generalWarning = String(getKey(raw, ["generalWarning", "warning", "avertissementGeneral", "avertissement"]) || "").trim();
   return {
     mealName,
     foods,
     totals: declaredTotals,
-    uncertainties: uncertainties.slice(0, 1000)
+    uncertainties: [generalWarning, uncertainties].filter(Boolean).join(" · ").slice(0, 1000)
   };
 }
 
@@ -4235,10 +4399,15 @@ function getKey(object, keys) {
 function normalizeImportedFood(food, index) {
   if (!food || typeof food !== "object" || Array.isArray(food)) throw new Error(`Aliment ${index + 1} invalide.`);
   const name = String(getKey(food, ["name", "food", "aliment", "nom"]) || "").trim().slice(0, 120);
-  const quantityLabel = String(getKey(food, ["quantity", "amount", "quantite", "quantité"]) ?? "").trim().slice(0, 60);
+  const quantityRaw = getKey(food, ["quantity", "amount", "quantite", "quantité"]);
+  const unit = String(getKey(food, ["unit", "unite", "unité"]) || "").trim().slice(0, 24);
+  const quantityText = String(quantityRaw ?? "").trim();
+  const quantityLabel = `${quantityText}${unit && !/[a-zà-ÿ]/i.test(quantityText) ? ` ${unit}` : ""}`.trim().slice(0, 60);
   if (!name) throw new Error(`Nom manquant pour l’aliment ${index + 1}.`);
   if (!quantityLabel) throw new Error(`Quantité manquante pour ${name}.`);
   const localFood = bestFoodMatch(name);
+  const confidenceRaw = normalizeSearchText(getKey(food, ["confidence", "confiance"]) || "medium");
+  const confidence = ["high", "medium", "low"].includes(confidenceRaw) ? confidenceRaw : "medium";
   return {
     name: localFood?.name || name,
     originalName: name,
@@ -4248,7 +4417,9 @@ function normalizeImportedFood(food, index) {
     kcal: parseNutritionNumber(getKey(food, ["calories", "kcal", "energy", "energie", "énergie"]), "calories", name),
     protein: parseNutritionNumber(getKey(food, ["protein", "proteins", "proteines", "protéines"]), "protéines", name),
     carbs: parseNutritionNumber(getKey(food, ["carbohydrates", "carbs", "glucides"]), "glucides", name),
-    fat: parseNutritionNumber(getKey(food, ["fat", "fats", "lipid", "lipids", "lipides"]), "lipides", name)
+    fat: parseNutritionNumber(getKey(food, ["fat", "fats", "lipid", "lipids", "lipides"]), "lipides", name),
+    confidence,
+    uncertainty: String(getKey(food, ["uncertainty", "incertitude", "warning", "note"]) || "").trim().slice(0, 300)
   };
 }
 
@@ -4331,6 +4502,9 @@ function quantityToGrams(quantity, foodName = "") {
 
 function buildImportedMealDraft(meta, payload) {
   const quantityWarnings = payload.foods.filter((food) => !food.grams).map((food) => `Quantité en grammes à confirmer pour ${food.name}.`);
+  const itemWarnings = payload.foods
+    .filter((food) => food.uncertainty)
+    .map((food) => `${food.name} (${food.confidence}) : ${food.uncertainty}`);
   const isVoice = meta.sourceType === "voice";
   return {
     id: id(),
@@ -4340,7 +4514,8 @@ function buildImportedMealDraft(meta, payload) {
     meal: meta.meal,
     date: meta.date || today(),
     mealTitle: payload.mealName,
-    analysisWarnings: [...(payload.uncertainties ? [payload.uncertainties] : []), ...quantityWarnings],
+    importFingerprint: importedMealFingerprint(meta, payload),
+    analysisWarnings: [...(payload.uncertainties ? [payload.uncertainties] : []), ...itemWarnings, ...quantityWarnings],
     source: "Réponse IA importée",
     items: payload.foods.map((food) => ({
       id: id(),
@@ -4348,6 +4523,19 @@ function buildImportedMealDraft(meta, payload) {
       source: food.localFoodId ? "Réponse IA · correspondance avec la banque locale" : "Réponse IA importée"
     }))
   };
+}
+
+function importedMealFingerprint(meta, payload) {
+  return JSON.stringify({
+    date: meta.date || today(),
+    meal: meta.meal,
+    foods: payload.foods.map((food) => [
+      normalizeSearchText(food.name),
+      Number(food.grams || 0),
+      Number(food.kcal || 0),
+      Number(food.protein || 0)
+    ])
+  });
 }
 
 function emptyMealItem() {
@@ -4419,7 +4607,7 @@ function renderPhotoAnalysisDraft() {
     <button class="secondary-button wide analysis-add-row" id="analysisAddFood" type="button">Ajouter un aliment</button>
     <div class="analysis-totals" id="analysisTotals">${analysisTotalsMarkup()}</div>
     <div class="inline-actions analysis-final-actions">
-      <button class="secondary-button compact" id="focusCorrection" type="button">Modifier</button>
+      <button class="secondary-button compact" id="focusCorrection" type="button">Vérifier les quantités</button>
       <button class="secondary-button compact" id="cancelPhotoAnalysis" type="button">Annuler</button>
       <button class="primary-button" id="confirmPhotoMeal" type="button">Ajouter au Journal</button>
     </div>
@@ -4447,7 +4635,8 @@ function analysisItemRow(item) {
       <label>Glucides (g)<input value="${esc(macros.carbs)}" type="number" inputmode="decimal" min="0" step="0.1" data-analysis-field="carbs" data-analysis-id="${esc(item.id)}"></label>
       <label>Lipides (g)<input value="${esc(macros.fat)}" type="number" inputmode="decimal" min="0" step="0.1" data-analysis-field="fat" data-analysis-id="${esc(item.id)}"></label>
     </div>
-    <p class="analysis-confidence">${esc(item.source || photoAnalysisDraft.source)}${esc(received)}</p>
+    <p class="analysis-confidence">${esc(item.source || photoAnalysisDraft.source)}${item.confidence ? ` · confiance ${esc(item.confidence)}` : ""}${esc(received)}</p>
+    ${item.uncertainty ? `<p class="small">Incertitude : ${esc(item.uncertainty)}</p>` : ""}
     ${bankAction}
     <button class="danger-button compact" data-analysis-delete="${esc(item.id)}" type="button">Supprimer</button>
   </div>`;
@@ -4593,15 +4782,28 @@ function confirmPhotoAnalysis() {
     toast("Vérifiez les noms, quantités et valeurs nutritionnelles.");
     return false;
   }
+  const fingerprint = photoAnalysisDraft.importFingerprint || "";
+  const duplicate = fingerprint && state.entries.some((entry) => {
+    if (entry.importFingerprint !== fingerprint) return false;
+    const importedAt = new Date(entry.importedAt || entry.createdAt || 0).getTime();
+    return Number.isFinite(importedAt) && Date.now() - importedAt < 10 * 60 * 1000;
+  });
+  if (duplicate) {
+    toast("Ce repas vient déjà d’être ajouté. Vérifiez le journal avant de recommencer.");
+    return false;
+  }
   const fromVoice = photoAnalysisDraft.sourceType === "voice";
   selectedDate = photoAnalysisDraft.date;
   selectedMeal = photoAnalysisDraft.meal;
+  const importedAt = new Date().toISOString();
   photoAnalysisDraft.items.forEach((item) => {
     addEntry(foodFromAnalysisItem(item), Number(item.grams), photoAnalysisDraft.meal, false, {
       photoId: photoAnalysisDraft.photoId,
       photoMealId: photoAnalysisDraft.id,
       analysisId: photoAnalysisDraft.id,
-      confidence: 0,
+      importFingerprint: fingerprint,
+      importedAt,
+      confidence: { high: 0.9, medium: 0.6, low: 0.3 }[item.confidence] || 0,
       analysisDemo: false
     });
   });
@@ -4652,7 +4854,7 @@ async function init() {
       location.reload();
     });
     const registerServiceWorker = () => navigator.serviceWorker
-      .register("./service-worker.js?v=1.3.0", { updateViaCache: "none" })
+      .register("./service-worker.js?v=1.4.0", { updateViaCache: "none" })
       .then((registration) => registration.update())
       .catch(() => undefined);
     if (document.readyState === "complete") registerServiceWorker();
